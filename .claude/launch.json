@@ -1,0 +1,27 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "renderer",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "vite.renderer.config.ts",
+        "--strictPort"
+      ],
+      "port": 5199
+    },
+    {
+      "name": "bench",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": [
+        "vite",
+        "--config",
+        "test/bench/vite.config.ts",
+        "--strictPort"
+      ],
+      "port": 5200
+    }
+  ]
+}

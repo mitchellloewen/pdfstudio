@@ -1,0 +1,8 @@
+node_modules/
+out/
+dist/
+*.log
+test/*.pdf
+test/smoke.mjs
+test/bench/pdfs.json
+*.tsbuildinfo

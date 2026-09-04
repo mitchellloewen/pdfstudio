@@ -1,0 +1,49 @@
+appId: ca.dirtpro.pdfstudio
+productName: PDF Studio
+directories:
+  buildResources: build
+  output: dist
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml,package-lock.json}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  # test scripts and their sample PDFs are dev-only — and the optimiser's
+  # before/after plan sets run to tens of MB
+  - '!test'
+  - '!.claude'
+extraResources:
+  - from: resources/bin
+    to: bin
+    filter:
+      - '**/*'
+  - from: resources/tessdata
+    to: tessdata
+    filter:
+      - '**/*'
+asarUnpack:
+  - resources/**
+  # tesseract.js spawns a worker thread and loads WASM from real file paths —
+  # neither works from inside app.asar
+  - node_modules/tesseract.js/**
+  - node_modules/tesseract.js-core/**
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-Setup-${version}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: PDF Studio
+  include: build/installer.nsh
+fileAssociations:
+  - ext: pdf
+    name: PDF Document
+    role: Editor

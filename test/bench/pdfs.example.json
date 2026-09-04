@@ -1,0 +1,4 @@
+[
+  { "key": "orig", "label": "original", "path": "C:/path/to/original.pdf" },
+  { "key": "opt", "label": "optimised", "path": "C:/path/to/out-optimized.pdf" }
+]

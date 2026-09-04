@@ -1,0 +1,33 @@
+{
+  "name": "pdf-studio",
+  "version": "2.0.0",
+  "description": "PDF Studio â€” a local PDF reader, editor, form-filler, signer and takeoff tool",
+  "author": "Dirt Pro Inc",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "build": "electron-vite build",
+    "build:win": "electron-vite build && electron-builder --win",
+    "postinstall": "electron-builder install-app-deps && node scripts/patch-tesseract.cjs"
+  },
+  "dependencies": {
+    "@pdf-lib/fontkit": "^1.1.1",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "4.7.76",
+    "tesseract.js": "^5.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

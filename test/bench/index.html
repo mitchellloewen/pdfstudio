@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>pdf.js render bench</title>
+    <style>
+      body { font: 13px/1.5 ui-monospace, monospace; padding: 16px; }
+      table { border-collapse: collapse; margin-top: 12px; }
+      td, th { border: 1px solid #ccc; padding: 3px 10px; text-align: right; }
+      th:first-child, td:first-child { text-align: left; }
+      #status { color: #666; }
+      .win { color: #0a7d29; font-weight: bold; }
+    </style>
+  </head>
+  <body>
+    <h3>pdf.js render bench</h3>
+    <div id="status">starting…</div>
+    <div id="out"></div>
+    <script type="module" src="./bench.ts"></script>
+  </body>
+</html>
