@@ -2262,6 +2262,40 @@ export default function App(): JSX.Element {
     }
   }, [openBytes, runMenuAction])
 
+  // ---- in-app updates -----------------------------------------------------
+  // Main does the checking and downloading; we only show state. A manual
+  // check (Help menu) reports every outcome; the automatic one only speaks up
+  // once an installer is verified and waiting.
+  type UpdateState = Awaited<ReturnType<Window['api']['getUpdateState']>>
+  const [updateState, setUpdateState] = useState<UpdateState>({ state: 'idle' })
+  const [appVersion, setAppVersion] = useState('')
+  const manualCheckRef = useRef(false)
+  useEffect(() => {
+    window.api.getVersion().then(setAppVersion).catch(() => {})
+    window.api.getUpdateState().then(setUpdateState).catch(() => {})
+    return window.api.onUpdate((s) => {
+      setUpdateState(s)
+      if (s.state === 'ready') {
+        toast(`PDF Studio ${s.version} is downloaded — Help → Restart to update when you're ready.`, 'ok')
+        manualCheckRef.current = false
+      } else if (s.state === 'none' && manualCheckRef.current) {
+        toast(`You're up to date (${s.version}).`, 'info')
+        manualCheckRef.current = false
+      } else if (s.state === 'error' && (s.manual || manualCheckRef.current)) {
+        toast('Update check failed: ' + s.error, 'err')
+        manualCheckRef.current = false
+      }
+    })
+  }, [toast])
+  const checkForUpdates = useCallback(() => {
+    manualCheckRef.current = true
+    window.api.checkForUpdates()
+  }, [])
+  const installUpdate = useCallback(async () => {
+    const ok = await window.api.installUpdate()
+    if (!ok) toast('The update is not ready yet — try Help → Check for updates.', 'err')
+  }, [toast])
+
   // recent files — shown on the empty state and in the ribbon's File menu
   useEffect(() => {
     window.api
@@ -2423,6 +2457,10 @@ export default function App(): JSX.Element {
         totalPages={model?.leaves.length ?? 0}
         onGoToPage={goToPage}
         onMenuAction={runMenuAction}
+        updateState={updateState}
+        appVersion={appVersion}
+        onCheckUpdates={checkForUpdates}
+        onInstallUpdate={() => void installUpdate()}
         recents={recents}
         onOpenRecent={(p) => void openRecent(p)}
         onUnlock={handleUnlock}

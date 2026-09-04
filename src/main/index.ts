@@ -5,12 +5,15 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import os from 'os'
 import { createWorker, type Worker as TessWorker } from 'tesseract.js'
+import { RELEASES_PAGE, checkForUpdates, getUpdateState, initUpdater, installUpdate, type UpdateState } from './updater'
 
 const execFileP = promisify(execFile)
 
 let mainWindow: BrowserWindow | null = null
 let startupFile: string | null = null
 let hasDirty = false
+/** Version of a downloaded, verified installer waiting for "Restart to Update". */
+let updateReady: string | null = null
 
 interface PdfPayload {
   path: string
@@ -267,6 +270,9 @@ function runAppCommand(cmd: string): void {
     case 'about':
       showAbout()
       break
+    case 'releases':
+      shell.openExternal(RELEASES_PAGE)
+      break
     case 'quit':
       app.quit()
       break
@@ -327,7 +333,17 @@ function buildMenu(): void {
     },
     {
       label: 'Help',
-      submenu: [{ label: 'About PDF Studio', click: () => showAbout() }]
+      submenu: [
+        { label: 'Check for Updates…', click: () => void checkForUpdates(true) },
+        {
+          label: updateReady ? `Restart to Update to ${updateReady}` : 'Restart to Update',
+          enabled: !!updateReady,
+          click: () => installUpdate()
+        },
+        { label: 'Release Notes (GitHub)', click: () => shell.openExternal(RELEASES_PAGE) },
+        { type: 'separator' },
+        { label: 'About PDF Studio', click: () => showAbout() }
+      ]
     }
   ]
   Menu.setApplicationMenu(Menu.buildFromTemplate(template))
@@ -707,6 +723,23 @@ function bootstrap(): void {
     })
 
     ipcMain.handle('app:hasQpdf', () => qpdfPath() !== null)
+
+    // ---- in-app updates (GitHub Releases) --------------------------------
+    ipcMain.handle('app:version', () => app.getVersion())
+    ipcMain.handle('update:state', () => getUpdateState())
+    ipcMain.on('update:check', () => void checkForUpdates(true))
+    ipcMain.handle('update:install', () => installUpdate())
+    initUpdater({
+      window: () => mainWindow,
+      onState: (s: UpdateState) => {
+        // keep the native Help menu's "Restart to Update" item in step
+        const ready = s.state === 'ready' ? s.version : null
+        if (ready !== updateReady) {
+          updateReady = ready
+          buildMenu()
+        }
+      }
+    })
 
     ipcMain.on('app:command', (_e, cmd: string) => runAppCommand(cmd))
 

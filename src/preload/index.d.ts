@@ -35,6 +35,15 @@ export interface StoredSignature {
   bytes: ArrayBuffer
 }
 
+export type UpdateState =
+  | { state: 'idle' }
+  | { state: 'checking' }
+  | { state: 'none'; version: string }
+  | { state: 'available'; version: string }
+  | { state: 'downloading'; version: string; percent: number }
+  | { state: 'ready'; version: string }
+  | { state: 'error'; error: string; manual: boolean }
+
 export type OcrResult =
   | { ok: true; words: { text: string; x0: number; y0: number; x1: number; y1: number }[] }
   | { ok: false; error: string }
@@ -57,6 +66,11 @@ export interface PreloadApi {
   addRecent: (path: string) => void
   setDirty: (dirty: boolean) => void
   appCommand: (cmd: string) => void
+  onUpdate: (cb: (s: UpdateState) => void) => () => void
+  getUpdateState: () => Promise<UpdateState>
+  checkForUpdates: () => void
+  installUpdate: () => Promise<boolean>
+  getVersion: () => Promise<string>
   pathForFile: (file: File) => string
   savePdf: (bytes: ArrayBuffer, suggestedName?: string) => Promise<string | null>
   savePdfToPath: (path: string, bytes: ArrayBuffer) => Promise<WriteResult>

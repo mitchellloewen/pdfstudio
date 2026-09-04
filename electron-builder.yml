@@ -34,7 +34,16 @@ win:
     - target: nsis
       arch:
         - x64
-  artifactName: ${productName}-Setup-${version}.${ext}
+  # No spaces: GitHub rewrites spaces in asset names, and the updater fetches
+  # the asset by this exact name.
+  artifactName: PDF-Studio-Setup-${version}.${ext}
+# Releases live on GitHub. `npm run build:win` never uploads (publish: never);
+# scripts/release.ps1 does that with gh. The block is here so electron-builder
+# writes dist/latest.yml, which src/main/updater.ts reads from the release.
+publish:
+  provider: github
+  owner: mitchellloewen
+  repo: pdfstudio
 nsis:
   oneClick: false
   perMachine: false

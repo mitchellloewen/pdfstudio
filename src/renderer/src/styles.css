@@ -1628,3 +1628,13 @@ select.field-input {
 .big.secondary:hover {
   border-color: var(--accent);
 }
+
+/* ---------- Update ready (Help menu) ---------- */
+.dm-btn.app-menu.attn {
+  color: var(--accent);
+  font-weight: 600;
+}
+.dm-item.dm-attn {
+  color: var(--accent);
+  font-weight: 600;
+}

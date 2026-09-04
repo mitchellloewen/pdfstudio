@@ -36,6 +36,15 @@ export interface StoredSignature {
   bytes: ArrayBuffer
 }
 
+export type UpdateState =
+  | { state: 'idle' }
+  | { state: 'checking' }
+  | { state: 'none'; version: string }
+  | { state: 'available'; version: string }
+  | { state: 'downloading'; version: string; percent: number }
+  | { state: 'ready'; version: string }
+  | { state: 'error'; error: string; manual: boolean }
+
 export type OcrResult =
   | { ok: true; words: { text: string; x0: number; y0: number; x1: number; y1: number }[] }
   | { ok: false; error: string }
@@ -67,6 +76,16 @@ const api = {
   setDirty: (dirty: boolean): void => ipcRenderer.send('app:setDirty', dirty),
   /** Window/app commands driven by the ribbon's File / View / Help menus. */
   appCommand: (cmd: string): void => ipcRenderer.send('app:command', cmd),
+  /** In-app updates (GitHub Releases). State events arrive as they happen. */
+  onUpdate: (cb: (s: UpdateState) => void): (() => void) => {
+    const handler = (_e: unknown, s: UpdateState): void => cb(s)
+    ipcRenderer.on('update', handler)
+    return () => ipcRenderer.removeListener('update', handler)
+  },
+  getUpdateState: (): Promise<UpdateState> => ipcRenderer.invoke('update:state'),
+  checkForUpdates: (): void => ipcRenderer.send('update:check'),
+  installUpdate: (): Promise<boolean> => ipcRenderer.invoke('update:install'),
+  getVersion: (): Promise<string> => ipcRenderer.invoke('app:version'),
   /** Resolve the on-disk path of a dropped File (empty string if unavailable). */
   pathForFile: (file: File): string => {
     try {

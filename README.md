@@ -162,7 +162,9 @@ again the moment you pick one. The state is remembered between sessions.
 
 ## Install & set as default PDF viewer
 
-Run `dist/PDF Studio-Setup-2.0.0.exe` (the newest `dist/PDF Studio-Setup-*.exe`). It installs per-user (no admin needed),
+Download the newest `PDF-Studio-Setup-<version>.exe` from
+<https://github.com/mitchellloewen/pdfstudio/releases/latest> (or run the one
+`npm run build:win` leaves in `dist/`). It installs per-user (no admin needed),
 adds Start-menu and desktop shortcuts, and registers the app for `.pdf` files. A
 portable build is also produced at `dist/win-unpacked/PDF Studio.exe`.
 
@@ -170,6 +172,27 @@ To make it your default PDF app: **File → Set PDF Studio as Default PDF App…
 (opens Windows Settings), or Settings → Apps → Default apps → `.pdf` → PDF Studio.
 Once set, double-clicking any PDF opens it here. The app is single-instance, so
 opening another PDF reuses the running window.
+
+## Updates
+
+Installed copies update themselves from GitHub Releases. About 8 s after
+launch (and every 4 h while open) the app fetches `latest.yml` from the newest
+release, and if it is newer than the running version, downloads the installer
+in the background, checks its SHA-512, then shows **Help → Restart to update**
+and a toast. Nothing installs until that is clicked; **Help → Check for
+updates…** does it on demand. There is no token anywhere in the app — the
+release assets are public. `src/main/updater.ts`, no updater dependency.
+
+To ship a version:
+
+```powershell
+# bump "version" in package.json, commit, then
+.\scripts\release.ps1 -Notes "What changed"
+```
+
+The script refuses to run on a dirty tree or an already-released version,
+builds, tags `v<version>`, pushes, and creates the release with the installer,
+its blockmap and `latest.yml`. Needs `gh` signed in (`gh auth login`).
 
 ## Develop
 

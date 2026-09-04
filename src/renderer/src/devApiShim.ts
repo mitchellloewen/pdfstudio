@@ -84,6 +84,11 @@ export function installDevApiShim(): void {
     addRecent: () => {},
     setDirty: () => {},
     appCommand: (cmd: string) => console.log('[shim] appCommand:', cmd),
+    onUpdate: () => () => {},
+    getUpdateState: async () => ({ state: 'idle' as const }),
+    checkForUpdates: () => console.log('[shim] checkForUpdates'),
+    installUpdate: async () => false,
+    getVersion: async () => 'dev',
     pathForFile: () => '',
     savePdf: async (bytes: ArrayBuffer, suggestedName?: string) =>
       download(bytes, suggestedName || 'document.pdf'),

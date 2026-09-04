@@ -38,6 +38,11 @@ interface Props {
   onGoToPage: (n: number) => void
   /** Routed through App's single menu-action handler (same one the native menu uses). */
   onMenuAction: (action: string) => void
+  /** In-app update status for the Help menu. */
+  updateState: UpdateState
+  appVersion: string
+  onCheckUpdates: () => void
+  onInstallUpdate: () => void
   recents: { path: string; name: string }[]
   onOpenRecent: (path: string) => void
   onUnlock: () => void
@@ -258,6 +263,9 @@ const RIBBON_TABS: { id: RibbonTab; label: string }[] = [
 /** Fill opacity presets offered in the Draw tab's Fill menu. */
 const FILL_ALPHAS = [0.25, 0.5, 1]
 
+/** Shape of the preload's update events, without importing the preload. */
+type UpdateState = Awaited<ReturnType<Window['api']['getUpdateState']>>
+
 export default function Toolbar(props: Props): JSX.Element {
   const { tool, onPickTool, zoom, setZoom } = props
   const [tab, setTab] = useState<RibbonTab>(() => (localStorage.getItem('pdfstudio.ribbon') as RibbonTab) || 'home')
@@ -450,12 +458,40 @@ export default function Toolbar(props: Props): JSX.Element {
               </>
             )}
           </DropMenu>
-          <DropMenu button="Help" className="app-menu" title="Help">
-            {(close) => (
-              <button className="dm-item" onClick={() => { close(); cmd('about') }}>
-                About PDF Studio
-              </button>
-            )}
+          <DropMenu button="Help" className={`app-menu ${props.updateState.state === 'ready' ? 'attn' : ''}`} title="Help">
+            {(close) => {
+              const u = props.updateState
+              return (
+                <>
+                  {u.state === 'ready' ? (
+                    <button className="dm-item dm-attn" onClick={() => { close(); props.onInstallUpdate() }}>
+                      ⟳ Restart to update to {u.version}
+                    </button>
+                  ) : (
+                    <button
+                      className="dm-item"
+                      disabled={u.state === 'checking' || u.state === 'downloading' || u.state === 'available'}
+                      onClick={() => { close(); props.onCheckUpdates() }}
+                    >
+                      {u.state === 'checking'
+                        ? 'Checking for updates…'
+                        : u.state === 'downloading'
+                          ? `Downloading update… ${u.percent}%`
+                          : u.state === 'available'
+                            ? `Downloading ${u.version}…`
+                            : 'Check for updates…'}
+                    </button>
+                  )}
+                  <button className="dm-item" onClick={() => { close(); cmd('releases') }}>
+                    Release notes (GitHub)
+                  </button>
+                  <div className="dm-sep" />
+                  <button className="dm-item" onClick={() => { close(); cmd('about') }}>
+                    About PDF Studio <span className="dm-kbd">v{props.appVersion}</span>
+                  </button>
+                </>
+              )
+            }}
           </DropMenu>
 
           <div className="rb-tabs-sep" />
