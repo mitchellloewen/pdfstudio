@@ -36,7 +36,10 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
   $env:PATH += ";$env:ProgramFiles\GitHub CLI"
 }
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'GitHub CLI (gh) not found - winget install GitHub.cli' }
-gh auth status *> $null
+# gh writes "not found" style results to stderr; under PowerShell 5.1 with
+# ErrorActionPreference=Stop a redirected native stderr becomes a terminating
+# error, so probe through cmd and read only the exit code.
+cmd /c "gh auth status >nul 2>&1"
 if ($LASTEXITCODE -ne 0) { throw 'Not signed in to GitHub - run: gh auth login' }
 
 $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
@@ -47,7 +50,7 @@ Step "Preflight for $tag"
 $dirty = git status --porcelain
 if ($dirty) { throw "Working tree has uncommitted changes - commit first:`n$dirty" }
 if (git tag -l $tag) { throw "$tag already exists - bump the version in package.json first (a released version is never rebuilt)" }
-gh release view $tag -R $repo *> $null
+cmd /c "gh release view $tag -R $repo >nul 2>&1"
 if ($LASTEXITCODE -eq 0) { throw "Release $tag already exists on GitHub" }
 
 $exe = "dist\PDF-Studio-Setup-$version.exe"
