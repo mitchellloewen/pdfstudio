@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { PDFDocument } from 'pdf-lib'
+import { PDFDocument, type PDFRef } from 'pdf-lib'
 import { loadPdf, isPasswordException, type PDFDocumentProxy } from './pdf/pdfjs'
 import {
   DEFAULT_DRAW_STYLE,
@@ -10,6 +10,7 @@ import {
   type DocModel,
   type DrawStyle,
   type FieldAnnot,
+  type ImageEditAnnot,
   type MarkupAnnot,
   type OcrWord,
   type PageLeaf,
@@ -27,6 +28,27 @@ import { CLOSED_KINDS } from './pdf/draw'
 import { runSearch, type SearchMatch, type HRect } from './pdf/search'
 import { optimizePdfInWorker } from './pdf/optimizeClient'
 import type { EditableLine } from './pdf/edit'
+import {
+  applyImageEdits,
+  buildDrawEdits,
+  decomposeM,
+  mulM,
+  previewDrawIndex,
+  scanPageImages,
+  type Matrix,
+  type PageImage
+} from './pdf/images'
+import { cropToStoredImage, decodeEmbeddedImage, previewImage } from './pdf/imagedecode'
+import {
+  SHEET_SIZES,
+  remapModel,
+  remapOcr,
+  resizePages,
+  type FitMode,
+  type Orientation,
+  type PageSizeInfo
+} from './pdf/pagesize'
+import type { ImageSel } from './components/ImageLayer'
 import Toolbar, { type LayerInfo, type SigInfo } from './components/Toolbar'
 import TabBar from './components/TabBar'
 import ThumbnailSidebar from './components/ThumbnailSidebar'
@@ -44,6 +66,7 @@ import HeaderFooterDialog, {
 import CombineDialog from './components/CombineDialog'
 import { addImagePage, buildCombined, describeFile, kindForName, type CombineItem } from './pdf/combine'
 import PagePickDialog from './components/PagePickDialog'
+import PageSizeDialog from './components/PageSizeDialog'
 
 interface DocTab {
   id: string
@@ -69,6 +92,20 @@ interface DocTab {
   /** Set once a background speed-up has been started (or ruled out) for this
    *  tab, so a slow page can't kick off the work more than once. */
   speedUpTried?: boolean
+  // ---- embedded-image editing ----
+  /** pdf-lib copy of srcBytes, loaded on demand to scan pages for images. */
+  imageDoc: PDFDocument | null
+  /** Images found on each source page, filled in as pages are looked at. */
+  pageImages: Record<number, PageImage[]>
+  /** Decoded pixels per source page and draw index, for the drag preview. */
+  imageBitmaps: Record<string, HTMLCanvasElement | null>
+  /** The embedded image being edited, on the current page. */
+  imageSel: ImageSel | null
+  /** Handles adjust the crop rather than the frame. */
+  imageCrop: boolean
+  /** Signature of the image edits the rendered document was built from. */
+  imagePreviewSig: string
+  imagePreviewBusy: boolean
 }
 
 interface SigItem {
@@ -96,6 +133,20 @@ type MarkupKind = MarkupAnnot['kind']
 
 const DEFAULT_COLORS = ['#111111', '#b91c1c', '#1d4ed8', '#0a7d29', '#d97706', '#7c3aed']
 const EMPTY_ANNOTS: Annotation[] = []
+const NO_BITMAPS: Record<number, HTMLCanvasElement | null> = {}
+
+/** The decoded image previews for one source page, keyed by draw index. */
+function bitmapsByDraw(tab: DocTab, srcPage: number): Record<number, HTMLCanvasElement | null> {
+  const prefix = `${srcPage}:`
+  const out: Record<number, HTMLCanvasElement | null> = {}
+  let any = false
+  for (const [key, canvas] of Object.entries(tab.imageBitmaps)) {
+    if (!key.startsWith(prefix)) continue
+    out[Number(key.slice(prefix.length))] = canvas
+    any = true
+  }
+  return any ? out : NO_BITMAPS
+}
 const HISTORY_LIMIT = 100
 const clampZoom = (z: number): number => Math.min(5, Math.max(0.2, +z.toFixed(3)))
 const errMsg = (e: unknown): string => String((e as Error)?.message || e)
@@ -226,6 +277,8 @@ export default function App(): JSX.Element {
   const scrollPosRef = useRef<Record<string, number>>({})
   const scrollRaf = useRef(0)
   const histRef = useRef<Record<string, HistEntry>>({})
+  /** Per tab, the pdf-lib copy of its source bytes used for image editing. */
+  const imageDocRef = useRef<Record<string, Promise<PDFDocument | null>>>({})
   const ocrRunRef = useRef<((tabId: string) => void) | null>(null)
   const ocrTokenRef = useRef<Record<string, number>>({})
   const sigsRef = useRef<SigItem[]>([])
@@ -332,6 +385,15 @@ export default function App(): JSX.Element {
         calibrationsByPage?: (Calibration | undefined)[]
         /** Open as unsaved (a freshly combined document has no file yet). */
         dirty?: boolean
+        /**
+         * Reuse this model instead of building a fresh one. Used by page
+         * resizing, which rewrites the file and moves the existing marks onto
+         * the new geometry itself — restoring them from the file as well would
+         * draw everything twice.
+         */
+        model?: DocModel
+        /** OCR words to carry across, by source page. */
+        ocrPages?: Record<number, OcrWord[]>
       } = {}
     ) => {
       let srcBytes = bytes
@@ -365,7 +427,7 @@ export default function App(): JSX.Element {
       try {
         const info = (await doc.getMetadata())?.info as { Keywords?: string } | undefined
         const kw = info?.Keywords
-        if (typeof kw === 'string' && kw.includes(EDITABLE_KEYWORD)) {
+        if (!opts.model && typeof kw === 'string' && kw.includes(EDITABLE_KEYWORD)) {
           const res = await importStudioAnnots(srcBytes)
           if (res) {
             restored = res.byPage
@@ -428,7 +490,7 @@ export default function App(): JSX.Element {
         srcBytes,
         srcPath: opts.srcPath ?? null,
         pdfDoc: doc,
-        model: { fileName: name, leaves, annotations: restoredAnnots, images: {}, calibrations },
+        model: opts.model ?? { fileName: name, leaves, annotations: restoredAnnots, images: {}, calibrations },
         zoom,
         currentPage: 1,
         selectedLeaves: [],
@@ -436,14 +498,22 @@ export default function App(): JSX.Element {
         editingId: null,
         dirty: opts.dirty ?? false,
         keepForms: true,
-        ocrPages: {},
+        ocrPages: opts.ocrPages ?? {},
         ocrVersion: 0,
         ocrProgress: null,
         layerConfig,
         layers,
-        layerVersion: 0
+        layerVersion: 0,
+        imageDoc: null,
+        pageImages: {},
+        imageBitmaps: {},
+        imageSel: null,
+        imageCrop: false,
+        imagePreviewSig: '',
+        imagePreviewBusy: false
       }
       histRef.current[newTab.id] = { past: [], future: [] }
+      delete imageDocRef.current[newTab.id]
       setTabs((prev) =>
         opts.replaceId ? prev.map((t) => (t.id === opts.replaceId ? newTab : t)) : [...prev, newTab]
       )
@@ -546,6 +616,7 @@ export default function App(): JSX.Element {
       const next = prev.filter((t) => t.id !== id)
       delete scrollPosRef.current[id]
       delete histRef.current[id]
+      delete imageDocRef.current[id]
       ocrTokenRef.current[id] = (ocrTokenRef.current[id] || 0) + 1 // abort any in-flight OCR
       delete ocrTokenRef.current[id]
       if (doomed) setTimeout(() => doomed.pdfDoc.destroy().catch(() => {}), 1500)
@@ -606,6 +677,9 @@ export default function App(): JSX.Element {
     async (tabId: string, bytes: ArrayBuffer): Promise<boolean> => {
       const tab = tabsRef.current.find((t) => t.id === tabId)
       if (!tab) return false
+      // an optimised copy is built from the original bytes, so swapping it in
+      // would throw away the image edits the viewer is currently showing
+      if (tab.model.annotations.some((a) => a.type === 'imgedit')) return false
       const fast = await loadPdf(bytes)
       if (fast.numPages !== tab.pdfDoc.numPages) {
         // Should be impossible, but a mismatch would misalign every overlay.
@@ -1219,6 +1293,510 @@ export default function App(): JSX.Element {
     },
     [commitModel, patchActive]
   )
+
+
+  // ---- embedded images ---------------------------------------------------
+  //
+  // Editing an image means editing the page's content stream, which the
+  // overlay model can't express — so the change lands in the model as an
+  // `imgedit` record and the *rendered* document is rebuilt from it. srcBytes
+  // is never touched; the save pipeline replays the same records.
+
+  /** The pdf-lib copy of a tab's source, loaded once and kept for scanning. */
+  const ensureImageDoc = useCallback(async (tabId: string): Promise<PDFDocument | null> => {
+    const cached = imageDocRef.current[tabId]
+    if (cached) return cached
+    const tab = tabsRef.current.find((t) => t.id === tabId)
+    if (!tab) return null
+    const p = PDFDocument.load(tab.srcBytes, { ignoreEncryption: true }).catch((e) => {
+      console.warn('could not open the file for image editing', e)
+      return null
+    })
+    imageDocRef.current[tabId] = p
+    return p
+  }, [])
+
+  /** Find the images one page draws, and remember them on the tab. */
+  const scanImagesForPage = useCallback(
+    async (srcPage: number) => {
+      const tabId = activeIdRef.current
+      if (!tabId) return
+      if (tabsRef.current.find((t) => t.id === tabId)?.pageImages[srcPage]) return
+      const doc = await ensureImageDoc(tabId)
+      if (!doc) return
+      const found = scanPageImages(doc, srcPage - 1)
+      setTabs((ts) =>
+        ts.map((t) => (t.id === tabId ? { ...t, pageImages: { ...t.pageImages, [srcPage]: found } } : t))
+      )
+    },
+    [ensureImageDoc]
+  )
+
+  /** Create or update the record behind one edited image. */
+  const handleImageChange = useCallback(
+    (rec: ImageEditAnnot, tag?: string) => {
+      commitModel(
+        (m) => ({
+          ...m,
+          annotations: m.annotations.some((a) => a.id === rec.id)
+            ? m.annotations.map((a) => (a.id === rec.id ? rec : a))
+            : [...m.annotations, rec]
+        }),
+        tag
+      )
+    },
+    [commitModel]
+  )
+
+  const selectImage = useCallback(
+    (sel: ImageSel | null) => patchActive(sel ? { imageSel: sel } : { imageSel: null, imageCrop: false }),
+    [patchActive]
+  )
+
+  /** Everything the image commands need about the current selection. */
+  const imageContext = useCallback(() => {
+    const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
+    const sel = tab?.imageSel
+    if (!tab || !sel) return null
+    const leaf = tab.model.leaves[tab.currentPage - 1]
+    if (!leaf) return null
+    const base = (tab.pageImages[leaf.srcPage] ?? []).find((i) => i.index === sel.drawIndex)
+    if (!base) return null
+    const rec = tab.model.annotations.find(
+      (a): a is ImageEditAnnot =>
+        a.type === 'imgedit' && a.leafId === leaf.id && a.drawIndex === sel.drawIndex && a.instance === sel.instance
+    )
+    const m = rec?.m ?? (sel.instance === 0 ? base.ctm : null)
+    if (!m) return null
+    return { tab, leaf, base, rec, sel, m, crop: rec?.crop }
+  }, [])
+
+  /** Rewrite the selected image's placement through `fn`. */
+  const editSelectedImage = useCallback(
+    (fn: (m: Matrix, crop: Box | undefined) => { m: Matrix; crop?: Box }, tag?: string) => {
+      const c = imageContext()
+      if (!c) return
+      const next = fn(c.m, c.crop)
+      handleImageChange(
+        {
+          id: c.rec?.id ?? uid(),
+          leafId: c.leaf.id,
+          type: 'imgedit',
+          drawIndex: c.sel.drawIndex,
+          instance: c.sel.instance,
+          imageId: c.rec?.imageId,
+          ...next
+        },
+        tag
+      )
+    },
+    [imageContext, handleImageChange]
+  )
+
+  /** Turn a placement by whole degrees about the middle of what is visible. */
+  const rotateImage = useCallback(
+    (deg: number) => {
+      editSelectedImage((m, crop) => {
+        const cx = m[0] * 0.5 + m[2] * 0.5 + m[4]
+        const cy = m[1] * 0.5 + m[3] * 0.5 + m[5]
+        const r = (deg * Math.PI) / 180
+        const cos = Math.cos(r)
+        const sin = Math.sin(r)
+        const about = mulM(
+          mulM([1, 0, 0, 1, -cx, -cy] as Matrix, [cos, sin, -sin, cos, 0, 0] as Matrix),
+          [1, 0, 0, 1, cx, cy] as Matrix
+        )
+        return { m: mulM(m, about), crop }
+      })
+    },
+    [editSelectedImage]
+  )
+
+  const flipImage = useCallback(
+    (axis: 'h' | 'v') => {
+      editSelectedImage((m, crop) => ({
+        m: mulM(axis === 'h' ? ([-1, 0, 0, 1, 1, 0] as Matrix) : ([1, 0, 0, -1, 0, 1] as Matrix), m),
+        crop
+      }))
+    },
+    [editSelectedImage]
+  )
+
+  /** Another draw of the same image, offset so it reads as a second copy. */
+  const duplicateImage = useCallback(() => {
+    const c = imageContext()
+    if (!c) return
+    const used = c.tab.model.annotations.filter(
+      (a): a is ImageEditAnnot => a.type === 'imgedit' && a.leafId === c.leaf.id && a.drawIndex === c.sel.drawIndex
+    )
+    const instance = Math.max(0, ...used.map((a) => a.instance)) + 1
+    handleImageChange({
+      id: uid(),
+      leafId: c.leaf.id,
+      type: 'imgedit',
+      drawIndex: c.sel.drawIndex,
+      instance,
+      m: mulM(c.m, [1, 0, 0, 1, 12, -12] as Matrix),
+      crop: c.crop,
+      imageId: c.rec?.imageId
+    })
+    patchActive({ imageSel: { drawIndex: c.sel.drawIndex, instance } })
+  }, [imageContext, handleImageChange, patchActive])
+
+  /**
+   * Remove the selected image. The one the file came with is suppressed with a
+   * flag — its record still remembers where it was, so Reset can bring it
+   * back; a copy simply stops existing.
+   */
+  const deleteImage = useCallback(() => {
+    const c = imageContext()
+    if (!c) return
+    if (c.sel.instance === 0) {
+      handleImageChange({
+        id: c.rec?.id ?? uid(),
+        leafId: c.leaf.id,
+        type: 'imgedit',
+        drawIndex: c.sel.drawIndex,
+        instance: 0,
+        m: c.m,
+        crop: c.crop,
+        imageId: c.rec?.imageId,
+        deleted: true
+      })
+    } else if (c.rec) {
+      const doomed = c.rec.id
+      commitModel((m) => ({ ...m, annotations: m.annotations.filter((a) => a.id !== doomed) }))
+    }
+    patchActive({ imageSel: null, imageCrop: false })
+  }, [imageContext, handleImageChange, commitModel, patchActive])
+
+  /** Put the image back exactly as the file had it. */
+  const resetImage = useCallback(() => {
+    const c = imageContext()
+    if (!c?.rec) return
+    const doomed = c.rec.id
+    if (c.sel.instance === 0) {
+      commitModel((m) => ({ ...m, annotations: m.annotations.filter((a) => a.id !== doomed) }))
+    }
+    patchActive({ imageCrop: false })
+  }, [imageContext, commitModel, patchActive])
+
+  const toggleImageCrop = useCallback(() => {
+    const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
+    if (!tab?.imageSel) return
+    patchActive({ imageCrop: !tab.imageCrop })
+  }, [patchActive])
+
+  /**
+   * Trim the cropped-away pixels for real, instead of hiding them behind a
+   * clip. The image is re-encoded at its own resolution and takes the place of
+   * the original, so the hidden content is gone for good.
+   */
+  const applyImageCrop = useCallback(async () => {
+    const c = imageContext()
+    if (!c) return
+    const crop = c.crop
+    if (!crop || (crop.w >= 0.999 && crop.h >= 0.999)) {
+      toast('Nothing is cropped off this image yet.', 'info')
+      return
+    }
+    setStatus('Trimming image…')
+    const shownAt = previewDrawIndex(
+      c.tab.model.annotations.filter(
+        (a): a is ImageEditAnnot => a.type === 'imgedit' && a.leafId === c.leaf.id
+      ),
+      c.sel.drawIndex
+    )
+    const source = shownAt < 0 ? null : await decodeEmbeddedImage(c.tab.pdfDoc, c.leaf.srcPage, shownAt)
+    if (!source) {
+      toast(
+        'This image could not be decoded, so the crop stays as a clipping region — it still prints and exports correctly.',
+        'info'
+      )
+      setStatus('')
+      return
+    }
+    const stored = await cropToStoredImage(source, crop)
+    if (!stored) {
+      toast('Could not re-encode the cropped image.', 'err')
+      setStatus('')
+      return
+    }
+    const rec: ImageEditAnnot = {
+      id: c.rec?.id ?? uid(),
+      leafId: c.leaf.id,
+      type: 'imgedit',
+      drawIndex: c.sel.drawIndex,
+      instance: c.sel.instance,
+      m: c.m,
+      imageId: stored.id
+    }
+    commitModel((m) => ({
+      ...m,
+      images: { ...m.images, [stored.id]: stored },
+      annotations: m.annotations.some((a) => a.id === rec.id)
+        ? m.annotations.map((a) => (a.id === rec.id ? rec : a))
+        : [...m.annotations, rec]
+    }))
+    patchActive({ imageCrop: false })
+    setStatus(`Image trimmed to ${stored.width} × ${stored.height} px`)
+  }, [imageContext, commitModel, patchActive, toast])
+
+  // Decode the selected image once, for the drag preview.
+  useEffect(() => {
+    const tab = active
+    const sel = tab?.imageSel
+    if (!tab || !sel) return
+    const leaf = tab.model.leaves[tab.currentPage - 1]
+    if (!leaf) return
+    const key = `${leaf.srcPage}:${sel.drawIndex}`
+    if (key in tab.imageBitmaps) return
+    const shownAt = previewDrawIndex(
+      tab.model.annotations.filter((a): a is ImageEditAnnot => a.type === 'imgedit' && a.leafId === leaf.id),
+      sel.drawIndex
+    )
+    if (shownAt < 0) return
+    let cancelled = false
+    void previewImage(tab.pdfDoc, leaf.srcPage, shownAt).then((canvas) => {
+      if (cancelled) return
+      setTabs((ts) =>
+        ts.map((t) => (t.id === tab.id ? { ...t, imageBitmaps: { ...t.imageBitmaps, [key]: canvas } } : t))
+      )
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [active?.id, active?.imageSel, active?.currentPage, active?.pdfDoc])
+
+  /**
+   * Rebuild the document the viewer draws from, with the image edits applied.
+   *
+   * This is the only truthful way to show a content-stream edit — no overlay
+   * can move an image that is already part of the page. `srcBytes` stays
+   * untouched, so saving still starts from the file that came off disk.
+   */
+  const rebuildImagePreview = useCallback(
+    async (tabId: string, sig: string) => {
+      const tab = tabsRef.current.find((t) => t.id === tabId)
+      if (!tab || tab.imagePreviewSig === sig) return
+      setTabs((ts) => ts.map((t) => (t.id === tabId ? { ...t, imagePreviewBusy: true } : t)))
+      try {
+        const doc = await PDFDocument.load(tab.srcBytes, { ignoreEncryption: true })
+        const recs = tab.model.annotations.filter((a): a is ImageEditAnnot => a.type === 'imgedit')
+        const embedded: Record<string, PDFRef> = {}
+        for (const id of new Set(recs.map((r) => r.imageId).filter((x): x is string => !!x))) {
+          const img = tab.model.images[id]
+          if (!img) continue
+          const emb = img.kind === 'png' ? await doc.embedPng(img.bytes) : await doc.embedJpg(img.bytes)
+          embedded[id] = emb.ref
+        }
+        // One page object serves every leaf that shows it, so the preview uses
+        // the first such leaf's edits. Saving is exact — it gives each leaf a
+        // page of its own.
+        const bySrc = new Map<number, ImageEditAnnot[]>()
+        const leafById = new Map(tab.model.leaves.map((l) => [l.id, l]))
+        for (const r of recs) {
+          const leaf = leafById.get(r.leafId)
+          if (!leaf) continue
+          const arr = bySrc.get(leaf.srcPage) ?? []
+          if (arr.length === 0 || arr[0].leafId === r.leafId) {
+            arr.push(r)
+            bySrc.set(leaf.srcPage, arr)
+          }
+        }
+        const pages = doc.getPages()
+        for (const [srcPage, group] of bySrc) {
+          const page = pages[srcPage - 1]
+          if (page) applyImageEdits(doc, page, buildDrawEdits(group, (id) => embedded[id]))
+        }
+        const bytes = await doc.save({ updateFieldAppearances: false, useObjectStreams: false })
+        const next = await loadPdf(toArrayBuffer(bytes))
+        const still = tabsRef.current.find((t) => t.id === tabId)
+        if (!still || next.numPages !== still.pdfDoc.numPages) {
+          void next.destroy().catch(() => {})
+          return
+        }
+        let layerConfig: unknown | null = null
+        try {
+          const occ = (await next.getOptionalContentConfig()) as {
+            getGroups?: () => Record<string, unknown>
+            setVisibility?: (id: string, v: boolean) => void
+          } | null
+          if (occ?.getGroups && Object.keys(occ.getGroups()).length) {
+            for (const l of still.layers ?? []) occ.setVisibility?.(l.id, l.visible)
+            layerConfig = occ
+          }
+        } catch {
+          /* no layers in this file */
+        }
+        const stale = still.pdfDoc
+        setTabs((ts) =>
+          ts.map((t) =>
+            t.id === tabId
+              ? {
+                  ...t,
+                  pdfDoc: next,
+                  layerConfig,
+                  layerVersion: t.layerVersion + 1,
+                  imagePreviewSig: sig,
+                  imagePreviewBusy: false,
+                  imageBitmaps: {}
+                }
+              : t
+          )
+        )
+        setTimeout(() => void stale.destroy().catch(() => {}), 2000)
+      } catch (e) {
+        console.warn('could not preview the image edits', e)
+        setTabs((ts) => ts.map((t) => (t.id === tabId ? { ...t, imagePreviewBusy: false } : t)))
+        toast('Could not redraw the page with that change — it will still be applied when you save.', 'err')
+      }
+    },
+    [toast]
+  )
+
+  // The image commands act on the current page, so a selection must not
+  // outlive the page it was made on — otherwise scrolling away and pressing
+  // Delete would remove a different page's picture with the same draw index.
+  useEffect(() => {
+    if (active?.imageSel) patchActive({ imageSel: null, imageCrop: false })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active?.id, active?.currentPage])
+
+  /** Size and resolution of the selected image, for the properties bar. */
+  const imageSelInfo = useMemo(() => {
+    const tab = active
+    const sel = tab?.imageSel
+    if (!tab || !sel) return null
+    const leaf = tab.model.leaves[tab.currentPage - 1]
+    if (!leaf) return null
+    const base = (tab.pageImages[leaf.srcPage] ?? []).find((i) => i.index === sel.drawIndex)
+    if (!base) return null
+    const rec = tab.model.annotations.find(
+      (a): a is ImageEditAnnot =>
+        a.type === 'imgedit' && a.leafId === leaf.id && a.drawIndex === sel.drawIndex && a.instance === sel.instance
+    )
+    const m = rec?.m ?? (sel.instance === 0 ? base.ctm : null)
+    if (!m) return null
+    const d = decomposeM(m)
+    const crop = rec?.crop
+    // the visible part carries only its share of the pixels
+    const px = Math.round(base.pxWidth * (crop?.w ?? 1))
+    const dpi = d.w > 0.01 ? Math.round((px / d.w) * 72) : 0
+    const inches = (v: number): string => (v / 72).toFixed(2)
+    return {
+      label: `${inches(d.w)} × ${inches(d.h)} in${dpi >= 10 ? ` · ${dpi} dpi` : ''}`,
+      rotation: Math.round(d.rotation),
+      cropped: !!crop,
+      copy: sel.instance > 0,
+      edited: !!rec
+    }
+  }, [active?.imageSel, active?.currentPage, active?.pageImages, active?.model.annotations, active?.model.leaves])
+
+  // ---- standard page size -------------------------------------------------
+
+  const [pageSizeOpen, setPageSizeOpen] = useState(false)
+  const [pageSizeList, setPageSizeList] = useState<PageSizeInfo[]>([])
+
+  /** Measure every page as the viewer shows it, then offer the size dialog. */
+  const openPageSize = useCallback(async () => {
+    const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
+    if (!tab) return
+    const sizes: PageSizeInfo[] = []
+    for (const leaf of tab.model.leaves) {
+      try {
+        const page = await tab.pdfDoc.getPage(leaf.srcPage)
+        const rot = (((page.rotate + leaf.rotation) % 360) + 360) % 360
+        const vp = page.getViewport({ scale: 1, rotation: rot })
+        sizes.push({ w: vp.width, h: vp.height })
+      } catch {
+        sizes.push({ w: 612, h: 792 })
+      }
+    }
+    setPageSizeList(sizes)
+    setPageSizeOpen(true)
+  }, [])
+
+  /**
+   * Rewrite the file onto a standard sheet and rebuild the tab around it.
+   *
+   * The marks in the model move with the content rather than being baked in
+   * first, so a text box stays a text box and every image stays editable — the
+   * page's own geometry is all that changes.
+   */
+  const applyPageSize = useCallback(
+    async (pages: number[], opts: { sizeId: string; orientation: Orientation; fit: FitMode }) => {
+      setPageSizeOpen(false)
+      const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
+      const sheet = SHEET_SIZES.find((s) => s.id === opts.sizeId)
+      if (!tab || !sheet) return
+      setBusy(true)
+      setStatus('Changing page size…')
+      try {
+        // the viewer's own page rotations are not in the file yet, so tell the
+        // resizer about them or a rotated page would be sized the wrong way up
+        const extraRotation: Record<number, number> = {}
+        for (const leaf of tab.model.leaves) {
+          if (leaf.rotation) extraRotation[leaf.srcPage - 1] = leaf.rotation
+        }
+        const srcPages = [...new Set(pages.map((n) => tab.model.leaves[n - 1]?.srcPage).filter(Boolean))].map(
+          (n) => (n as number) - 1
+        )
+        const res = await resizePages(tab.srcBytes, {
+          size: { w: sheet.w, h: sheet.h },
+          orientation: opts.orientation,
+          fit: opts.fit,
+          pages: srcPages,
+          extraRotation
+        })
+        if (res.changed === 0) {
+          setStatus('')
+          toast('Those pages are already that size.', 'info')
+          return
+        }
+        const model = remapModel(tab.model, res.transforms)
+        const ocrPages: Record<number, OcrWord[]> = {}
+        for (const [key, words] of Object.entries(tab.ocrPages)) {
+          const m = res.transforms[Number(key) - 1]
+          ocrPages[Number(key)] = m ? remapOcr(words, m) : words
+        }
+        await buildTab(toArrayBuffer(res.bytes), tab.model.fileName, {
+          replaceId: tab.id,
+          srcPath: tab.srcPath,
+          model,
+          ocrPages,
+          dirty: true
+        })
+        setStatus(
+          `${res.changed} page${res.changed === 1 ? '' : 's'} resized to ${sheet.label.split(' — ')[0]}`
+        )
+      } catch (e) {
+        toast(`Could not change the page size: ${errMsg(e)}`, 'err')
+        setStatus('')
+      } finally {
+        setBusy(false)
+      }
+    },
+    [buildTab, toast]
+  )
+
+  /** What the rendered document has to match: every image edit, in order. */
+  const imageEditSig = useMemo(() => {
+    const recs = active?.model.annotations.filter((a): a is ImageEditAnnot => a.type === 'imgedit') ?? []
+    if (!recs.length) return ''
+    return JSON.stringify(
+      recs
+        .map((r) => JSON.stringify([r.leafId, r.drawIndex, r.instance, r.m, r.crop, r.deleted, r.imageId]))
+        .sort()
+    )
+  }, [active?.model.annotations])
+
+  useEffect(() => {
+    if (!active || imageEditSig === active.imagePreviewSig) return
+    const id = active.id
+    const t = window.setTimeout(() => void rebuildImagePreview(id, imageEditSig), 250)
+    return () => window.clearTimeout(t)
+  }, [active?.id, imageEditSig, active?.imagePreviewSig, rebuildImagePreview])
 
   /**
    * A text editor blurred: stop editing and drop the box if nothing was typed.
@@ -2161,12 +2739,44 @@ export default function App(): JSX.Element {
 
       if (e.key === 'Escape') {
         if (searchOpen) setSearchOpen(false)
+        // Escape backs out of a crop before it drops the selection, so it is
+        // always one step "less committed" rather than starting over.
+        if (active?.imageCrop) {
+          patchActive({ imageCrop: false })
+          return
+        }
+        if (active?.imageSel) {
+          selectImage(null)
+          return
+        }
         // Escape puts the pointer back to plain select — that's how you stop a
         // sticky tool (text / check / X / circle) from placing another one.
         if (tool !== 'select') setTool('select')
         setEditingId(null)
         setSelectedId(null)
         return
+      }
+
+      // An embedded image is selected: it owns the editing keys.
+      if (active?.imageSel && !inField) {
+        if (e.key === 'Delete' || e.key === 'Backspace') {
+          e.preventDefault()
+          deleteImage()
+          return
+        }
+        if (mod && key === 'd') {
+          e.preventDefault()
+          duplicateImage()
+          return
+        }
+        if (e.key.startsWith('Arrow')) {
+          const step = e.shiftKey ? 10 : 1
+          const dx = e.key === 'ArrowRight' ? step : e.key === 'ArrowLeft' ? -step : 0
+          const dy = e.key === 'ArrowUp' ? step : e.key === 'ArrowDown' ? -step : 0
+          e.preventDefault()
+          editSelectedImage((m, crop) => ({ m: mulM(m, [1, 0, 0, 1, dx, dy] as Matrix), crop }), 'img:nudge')
+          return
+        }
       }
 
       if ((e.key === 'Delete' || e.key === 'Backspace') && active?.selectedId && !active.editingId && !inField) {
@@ -2214,7 +2824,12 @@ export default function App(): JSX.Element {
     redo,
     handleSave,
     handleSaveAs,
-    handlePrint
+    handlePrint,
+    patchActive,
+    selectImage,
+    deleteImage,
+    duplicateImage,
+    editSelectedImage
   ])
 
   // One router for both menu sources: the native menu bar (Alt) and the
@@ -2500,6 +3115,17 @@ export default function App(): JSX.Element {
         layers={active?.layers ?? null}
         onToggleLayer={toggleLayer}
         busy={busy}
+        onPageSize={() => void openPageSize()}
+        imageInfo={imageSelInfo}
+        imageCropMode={!!active?.imageCrop}
+        imageBusy={!!active?.imagePreviewBusy}
+        onImageRotate={rotateImage}
+        onImageFlip={flipImage}
+        onImageToggleCrop={toggleImageCrop}
+        onImageApplyCrop={() => void applyImageCrop()}
+        onImageDuplicate={duplicateImage}
+        onImageDelete={deleteImage}
+        onImageReset={resetImage}
       />
       {tabs.length > 0 && (
         <TabBar
@@ -2586,6 +3212,13 @@ export default function App(): JSX.Element {
                   layerConfig={active.layerConfig ?? undefined}
                   layerVersion={active.layerVersion}
                   onRenderTime={noteRenderTime}
+                  pageImages={active.pageImages[leaf.srcPage] ?? null}
+                  imageSel={active.currentPage - 1 === idx ? active.imageSel : null}
+                  imageCrop={active.imageCrop}
+                  imageBitmaps={bitmapsByDraw(active, leaf.srcPage)}
+                  onImageSelect={selectImage}
+                  onImageChange={handleImageChange}
+                  onNeedImages={scanImagesForPage}
                 />
               ))}
             </div>
@@ -2748,6 +3381,19 @@ export default function App(): JSX.Element {
           danger
           onConfirm={deleteByPage}
           onCancel={() => setDeleteOpen(false)}
+        />
+      )}
+      {pageSizeOpen && active && (
+        <PageSizeDialog
+          totalPages={active.model.leaves.length}
+          currentPage={active.currentPage}
+          selectedPages={active.selectedLeaves
+            .map((id) => active.model.leaves.findIndex((l) => l.id === id) + 1)
+            .filter((n) => n > 0)
+            .sort((a, b) => a - b)}
+          sizes={pageSizeList}
+          onConfirm={(pages, opts) => void applyPageSize(pages, opts)}
+          onCancel={() => setPageSizeOpen(false)}
         />
       )}
       {flattenAsk && (

@@ -51,6 +51,20 @@ again the moment you pick one. The state is remembered between sessions.
   covered by a clean vector patch. One Ctrl+Z reverts the whole edit.
 - **Layers** — show/hide the document's optional-content layers (CAD exports
   etc.). Hidden layers stay hidden in the saved file and in redacted rasters.
+- **Edit images** — pick any picture that is already part of the page and
+  **move, resize, rotate, crop, copy or delete** it. Drag to move, corners to
+  resize (hold Shift to distort), the round handle to turn; arrow keys nudge,
+  Ctrl+D copies, Delete removes, and **Reset** puts it back exactly as the file
+  had it. Built for tidying up scans.
+  - **Crop** starts as a clipping region so you can keep adjusting it — the
+    faded part is what gets trimmed. **Apply crop** re-encodes the picture with
+    only the part you kept, so the hidden pixels are really gone.
+  - The page is redrawn from a rebuilt copy of the document, so what you see is
+    exactly what saves. The file on disk is untouched until you save, and every
+    step is undoable.
+  - Copies cost nothing — both draws point at the same image data. Pictures
+    nested inside a shared form object are copied first, so editing one page
+    cannot move the same picture on another.
 - Remove restrictions (unlock) also lives here.
 
 **Heavy CAD plan sets open fast on their own**
@@ -96,6 +110,14 @@ again the moment you pick one. The state is remembered between sessions.
   page range and start number for all of them. Default is plain
   `Page {n} of {N}` bottom-centre. Added as normal text boxes: move, restyle
   or delete individually, or undo all at once.
+- **Page size…** — put pages on a standard sheet (Letter, Legal, Tabloid,
+  A4, A3). The dialog first tells you what sizes the document actually has,
+  which is usually the point: a scanner that says “Letter” rarely produces
+  exactly 8.50 × 11.00 in. Choose **keep the content at its printed size**
+  (centred on the new sheet, edges trimmed or white margins added) or **scale
+  it to fit** (proportional — measurement scales are corrected so calibrated
+  lengths still read the same). Nothing is rasterised: text stays text,
+  pictures stay editable, and pages already the right size are left alone.
 
 **Draw tab**
 - Plain drawing with no scale and no measurements: **line**, **arrow**,

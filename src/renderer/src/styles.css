@@ -1638,3 +1638,138 @@ select.field-input {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* ---------- embedded image editing ---------- */
+/* Sits above the page canvas and the annotation overlay, and only exists while
+   the Edit images tool is on — so nothing else has to give up its clicks. */
+.img-layer {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+.img-outline {
+  fill: transparent;
+  stroke: rgba(59, 130, 246, 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+  cursor: move;
+}
+.img-outline.hover {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  fill: rgba(59, 130, 246, 0.07);
+}
+.img-outline.sel {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: none;
+}
+/* The whole picture while cropping: the part being trimmed away. */
+.img-full-outline {
+  fill: none;
+  stroke: rgba(251, 191, 36, 0.8);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+.img-handle {
+  fill: #fff;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.img-handle.crop {
+  fill: #fbbf24;
+  stroke: #78350f;
+}
+.img-rot-stem {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+.img-rot-handle {
+  fill: #fff;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  cursor: grab;
+}
+
+/* the contextual image controls on the Advanced tab */
+.tb-imgprops {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+}
+.tb-imginfo {
+  font-size: 12px;
+  color: var(--text);
+  margin-right: 4px;
+  white-space: nowrap;
+}
+.tb-imginfo.dim {
+  color: var(--muted);
+}
+.tb-mini {
+  min-width: 26px;
+  height: 26px;
+  padding: 0 6px;
+  font-size: 13px;
+  line-height: 1;
+}
+.tb-mini.wide {
+  font-size: 12px;
+}
+.tb-mini.on {
+  background: var(--accent);
+  color: #fff;
+}
+.tb-mini.danger:hover:not(:disabled) {
+  background: #b91c1c;
+  color: #fff;
+}
+
+/* the page-size dialog's extra controls */
+.ps-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 12px 0 4px;
+}
+.ps-current {
+  font-size: 13px;
+  color: var(--muted);
+}
+.ps-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.ps-row > span {
+  min-width: 86px;
+  color: var(--muted);
+}
+.ps-row select {
+  flex: 1;
+}
+.ps-fit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+/* These hints are a sentence, not a one-line summary: give them the full width
+   of the option under its label rather than a narrow column beside it. */
+.ps-fit .ex-opt {
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.ps-fit .ex-opt-hint {
+  flex-basis: 100%;
+  margin-left: 24px;
+  white-space: normal;
+  overflow: visible;
+  line-height: 1.4;
+}

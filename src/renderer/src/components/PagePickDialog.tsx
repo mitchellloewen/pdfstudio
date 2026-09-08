@@ -48,6 +48,8 @@ interface Props {
   selectedPages: number[]
   /** Extra controls (e.g. rotate direction) shown under the page options. */
   extra?: ReactNode
+  /** Which option starts selected. Defaults to the page in view. */
+  defaultMode?: 'current' | 'selected' | 'all' | 'custom'
   onConfirm: (pages: number[]) => void
   onCancel: () => void
 }
@@ -66,10 +68,11 @@ export default function PagePickDialog({
   currentPage,
   selectedPages,
   extra,
+  defaultMode,
   onConfirm,
   onCancel
 }: Props): JSX.Element {
-  const [mode, setMode] = useState<Mode>('current')
+  const [mode, setMode] = useState<Mode>(defaultMode ?? 'current')
   const [spec, setSpec] = useState('')
 
   const custom = useMemo(() => parsePageSpec(spec, totalPages), [spec, totalPages])

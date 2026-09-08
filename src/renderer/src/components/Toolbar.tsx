@@ -72,6 +72,21 @@ interface Props {
   layers: LayerInfo[] | null
   onToggleLayer: (id: string, visible: boolean) => void
   busy: boolean
+  /** Put the chosen pages on a standard sheet size. */
+  onPageSize: () => void
+  // ---- embedded image editing (Advanced tab) ----
+  /** Size / resolution of the selected image, or null when nothing is picked. */
+  imageInfo: { label: string; rotation: number; cropped: boolean; copy: boolean; edited: boolean } | null
+  imageCropMode: boolean
+  /** The viewer is redrawing the page with the latest image edit. */
+  imageBusy: boolean
+  onImageRotate: (deg: number) => void
+  onImageFlip: (axis: 'h' | 'v') => void
+  onImageToggleCrop: () => void
+  onImageApplyCrop: () => void
+  onImageDuplicate: () => void
+  onImageDelete: () => void
+  onImageReset: () => void
 }
 
 function PageNav({
@@ -857,6 +872,14 @@ export default function Toolbar(props: Props): JSX.Element {
             </button>
             <button
               className="tb-file"
+              onClick={props.onPageSize}
+              disabled={!props.hasDoc || props.busy}
+              title="Put pages on a standard sheet (Letter, Tabloid, A4…) — either scaling the content to fit or keeping it at its printed size"
+            >
+              ⤢ Page size…
+            </button>
+            <button
+              className="tb-file"
               onClick={props.onExtract}
               disabled={!props.hasDoc || props.busy}
               title="Save the current page, a page range or the sidebar selection as a new PDF"
@@ -902,6 +925,73 @@ export default function Toolbar(props: Props): JSX.Element {
             <button className="tb-file" onClick={props.onUnlock} disabled={!props.hasDoc || props.busy} title="Remove owner-password restrictions (print/copy/edit locks)">
               🔓 Remove restrictions
             </button>
+            <div className="tb-sep" />
+            <button
+              className={`tb-tool warn ${tool === 'image-edit' ? 'active' : ''}`}
+              onClick={() => onPickTool(tool === 'image-edit' ? 'select' : 'image-edit')}
+              disabled={!props.hasDoc}
+              title="Pick any picture already on the page and move, resize, rotate, crop, copy or delete it — useful for tidying up scans"
+            >
+              <span className="ico">🖼</span>
+              <span className="lbl">Edit images</span>
+            </button>
+            {tool === 'image-edit' && (
+              <div className="tb-imgprops">
+                {props.imageInfo ? (
+                  <>
+                    <span className="tb-imginfo">
+                      {props.imageInfo.label}
+                      {props.imageInfo.rotation !== 0 && ` · ${props.imageInfo.rotation}°`}
+                      {props.imageInfo.copy && ' · copy'}
+                      {props.imageBusy && ' · redrawing…'}
+                    </span>
+                    <button className="tb-mini" onClick={() => props.onImageRotate(90)} title="Rotate 90° left">
+                      ↺
+                    </button>
+                    <button className="tb-mini" onClick={() => props.onImageRotate(-90)} title="Rotate 90° right">
+                      ↻
+                    </button>
+                    <button className="tb-mini" onClick={() => props.onImageFlip('h')} title="Flip horizontally">
+                      ⇄
+                    </button>
+                    <button className="tb-mini" onClick={() => props.onImageFlip('v')} title="Flip vertically">
+                      ⇅
+                    </button>
+                    <button
+                      className={`tb-mini wide ${props.imageCropMode ? 'on' : ''}`}
+                      onClick={props.onImageToggleCrop}
+                      title="Drag the handles to trim the edges. The trimmed part is hidden, not removed, until you apply it."
+                    >
+                      ⛶ Crop
+                    </button>
+                    <button
+                      className="tb-mini wide"
+                      onClick={props.onImageApplyCrop}
+                      disabled={!props.imageInfo.cropped}
+                      title="Re-encode the picture with only the part you kept, so the trimmed pixels are really gone"
+                    >
+                      Apply crop
+                    </button>
+                    <button className="tb-mini wide" onClick={props.onImageDuplicate} title="Another copy of this picture (Ctrl+D)">
+                      ⧉ Copy
+                    </button>
+                    <button className="tb-mini wide danger" onClick={props.onImageDelete} title="Remove this picture from the page (Delete)">
+                      🗑 Delete
+                    </button>
+                    <button
+                      className="tb-mini wide"
+                      onClick={props.onImageReset}
+                      disabled={!props.imageInfo.edited || props.imageInfo.copy}
+                      title="Put the picture back exactly where the file had it"
+                    >
+                      Reset
+                    </button>
+                  </>
+                ) : (
+                  <span className="tb-imginfo dim">Click a picture on the page. Drag to move, corners to resize (Shift distorts), the round handle to turn.</span>
+                )}
+              </div>
+            )}
             <span className="rb-hint warn">⚠ These tools change the original document content — everything supports Undo.</span>
           </div>
         )}

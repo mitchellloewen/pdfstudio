@@ -15,6 +15,7 @@ import {
 } from 'pdf-lib'
 import type { FontKey } from './types'
 import { bounds, shapePad, shapePaths } from './draw'
+import { applyImageEdits, buildDrawEdits, type ImageDrawEdit } from './images'
 import {
   countEditable,
   hexToRgb,
@@ -30,6 +31,7 @@ import type {
   Box,
   DocModel,
   FieldAnnot,
+  ImageEditAnnot,
   MarkupAnnot,
   MeasureAnnot,
   OcrWord,
@@ -328,6 +330,14 @@ export interface RasterResult {
  */
 export type RasterizeLeaf = (leaf: PageLeaf, whiteouts: RectAnnot[]) => Promise<RasterResult | null>
 
+/**
+ * Note for callers: on a rasterised page the embedded-image edits have to come
+ * from the document the rasteriser renders — the app keeps the viewer's pdf.js
+ * document in step with them, so `makeRasterizer(tab.pdfDoc)` already has them
+ * burned in. They are deliberately not re-applied here, which would draw the
+ * moved image twice.
+ */
+
 export interface BakeOptions {
   /** Keep AcroForm fields interactive (fill values) instead of flattening them. */
   keepForms?: boolean
@@ -452,6 +462,26 @@ function drawAnnots(page: PDFPage, frame: Frame, anns: Annotation[], ctx: DrawCt
   }
 }
 
+/** A page's image edits, in the shape the content-stream editor wants. */
+function imageEditsFor(anns: Annotation[], images: Record<string, PDFImage>): Map<number, ImageDrawEdit> {
+  return buildDrawEdits(
+    anns.filter((a): a is ImageEditAnnot => a.type === 'imgedit'),
+    (id) => images[id]?.ref
+  )
+}
+
+/** Source pages (0-based) that any leaf edits the embedded images of. */
+function pagesWithImageEdits(model: DocModel): Set<number> {
+  const byId = new Map(model.leaves.map((l) => [l.id, l]))
+  const out = new Set<number>()
+  for (const a of model.annotations) {
+    if (a.type !== 'imgedit') continue
+    const leaf = byId.get(a.leafId)
+    if (leaf) out.add(leaf.srcPage - 1)
+  }
+  return out
+}
+
 function groupByLeaf(model: DocModel): Map<string, Annotation[]> {
   const map = new Map<string, Annotation[]>()
   for (const a of model.annotations) {
@@ -525,6 +555,12 @@ export async function bakeAndSave(srcBytes: ArrayBuffer, model: DocModel, opts: 
   const origCount = srcPages.length
   const byLeaf = groupByLeaf(model)
   const usedSrc = new Set<number>()
+  // A page whose embedded images were edited must not be shared between two
+  // leaves — the edit is written into its content stream, so each leaf that
+  // shows it needs a page object of its own.
+  const imageEdited = pagesWithImageEdits(model)
+  const leafCount = new Map<number, number>()
+  for (const l of model.leaves) leafCount.set(l.srcPage - 1, (leafCount.get(l.srcPage - 1) ?? 0) + 1)
 
   for (const leaf of model.leaves) {
     const srcIdx = leaf.srcPage - 1
@@ -559,7 +595,8 @@ export async function bakeAndSave(srcBytes: ArrayBuffer, model: DocModel, opts: 
       drawAnnots(page, frame, anns, ctx, true)
     } else {
       let page: PDFPage
-      if (usedSrc.has(srcIdx)) {
+      const mustClone = imageEdited.has(srcIdx) && (leafCount.get(srcIdx) ?? 0) > 1
+      if (usedSrc.has(srcIdx) || mustClone) {
         // leaf duplicated in the viewer — clone the page objects
         const [dup] = await doc.copyPages(doc, [srcIdx])
         page = doc.addPage(dup)
@@ -567,6 +604,11 @@ export async function bakeAndSave(srcBytes: ArrayBuffer, model: DocModel, opts: 
         usedSrc.add(srcIdx)
         page = doc.addPage(srcPages[srcIdx])
       }
+      // Re-place the images embedded in the page before anything is drawn over
+      // it: this replaces /Contents, which would throw away pdf-lib's own
+      // appended content stream if it ran the other way round.
+      const imgEdits = imageEditsFor(anns, ctx.images)
+      if (imgEdits.size) applyImageEdits(doc, page, imgEdits)
       const frame = pageFrame(page, leaf.rotation)
       if (leaf.rotation) {
         const cur = page.getRotation().angle
@@ -659,6 +701,8 @@ export async function extractPages(
     } else {
       const [copied] = await out.copyPages(src, [leaf.srcPage - 1])
       const page = out.addPage(copied)
+      const imgEdits = imageEditsFor(anns, ctx.images)
+      if (imgEdits.size) applyImageEdits(out, page, imgEdits)
       const frame = pageFrame(page, leaf.rotation)
       if (leaf.rotation) {
         const cur = page.getRotation().angle

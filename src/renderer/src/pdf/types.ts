@@ -25,6 +25,7 @@ export type ToolId =
   | 'draw-polyline'
   | 'draw-polygon'
   | 'draw-free'
+  | 'image-edit'
 
 /** Standard-14 font choices for baked text (no embedding needed). */
 export type FontKey = 'helv' | 'helvB' | 'times' | 'timesB' | 'cour' | 'courB'
@@ -62,6 +63,9 @@ export interface Pt {
   x: number
   y: number
 }
+
+/** A 2D affine transform in PDF's operand order: `a b c d e f`. */
+export type Matrix = [number, number, number, number, number, number]
 
 export interface Box {
   x: number
@@ -149,6 +153,29 @@ export interface ShapeAnnot extends AnnotBase {
   arrowEnd?: boolean
 }
 
+/**
+ * An edit to an image that is *already embedded* in the page's content stream.
+ *
+ * Unlike every other annotation this does not draw anything of its own — it
+ * re-places a draw that is already there. `drawIndex` is the image's order
+ * among the page's image draws, which is how the save pipeline finds it again;
+ * `instance` is 0 for the image the file came with and 1, 2, … for copies of
+ * it the user made, each independently placed.
+ */
+export interface ImageEditAnnot extends AnnotBase {
+  type: 'imgedit'
+  drawIndex: number
+  instance: number
+  /** Unit square -> user space for the *visible* (cropped) part of the image. */
+  m: Matrix
+  /** The part of the image that shows, in 0..1 image space. Absent = all of it. */
+  crop?: Box
+  /** The original draw is suppressed. Copies of it, if any, still draw. */
+  deleted?: boolean
+  /** Crop applied for real: draw this stored image in place of the original. */
+  imageId?: string
+}
+
 export interface FieldAnnot extends AnnotBase {
   type: 'field'
   fieldKind: 'text' | 'checkbox' | 'radio' | 'combo' | 'list'
@@ -164,7 +191,7 @@ export interface FieldAnnot extends AnnotBase {
   order: number // document-wide tab order
 }
 
-export type Annotation = RectAnnot | MeasureAnnot | FieldAnnot | MarkupAnnot | ShapeAnnot
+export type Annotation = RectAnnot | MeasureAnnot | FieldAnnot | MarkupAnnot | ShapeAnnot | ImageEditAnnot
 
 /** One OCR-recognised word on a scanned page (rect in PDF user space). */
 export interface OcrWord {

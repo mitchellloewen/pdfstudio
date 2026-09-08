@@ -8,6 +8,7 @@ import {
   type DrawStyle,
   type FieldAnnot,
   type FontKey,
+  type ImageEditAnnot,
   type MarkupAnnot,
   type MeasureAnnot,
   type OcrWord,
@@ -36,6 +37,8 @@ import {
 } from '../pdf/draw'
 import { arcThrough, dist, formatMeasure, polygonArea, polylineLength } from '../pdf/measure'
 import { getEditableLines, type EditableLine } from '../pdf/edit'
+import type { PageImage } from '../pdf/images'
+import ImageLayer, { type ImageSel } from './ImageLayer'
 import type { HRect } from '../pdf/search'
 
 /** CSS equivalents of the PDF standard fonts used for baking. */
@@ -87,6 +90,17 @@ interface Props {
   /** Reports how long a page took to rasterise, so the app can spot a
    *  document that is too heavy for pdf.js and offer to speed it up. */
   onRenderTime?: (ms: number) => void
+  /** Images embedded in this page, once the app has scanned for them. */
+  pageImages?: PageImage[] | null
+  /** Which embedded image is selected, and whether its crop is being adjusted. */
+  imageSel?: ImageSel | null
+  imageCrop?: boolean
+  /** Decoded pixels per draw index, for the drag preview. */
+  imageBitmaps?: Record<number, HTMLCanvasElement | null>
+  onImageSelect?: (sel: ImageSel | null) => void
+  onImageChange?: (rec: ImageEditAnnot, tag?: string) => void
+  /** Asks the app to scan this page for embedded images (image tool only). */
+  onNeedImages?: (srcPage: number) => void
 }
 
 // shared measurer for fitting OCR span widths to their word boxes
@@ -227,7 +241,14 @@ function PageView(props: Props): JSX.Element {
     onEditLine,
     layerConfig,
     layerVersion,
-    onRenderTime
+    onRenderTime,
+    pageImages,
+    imageSel,
+    imageCrop,
+    imageBitmaps,
+    onImageSelect,
+    onImageChange,
+    onNeedImages
   } = props
 
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -920,6 +941,13 @@ function PageView(props: Props): JSX.Element {
     [tool, onSelect, onEdit]
   )
 
+  // The image tool needs to know what this page draws; the scan runs in the
+  // app (it owns the pdf-lib copy of the file) and is cached there per page.
+  const wantImages = tool === 'image-edit' && visible && !pageImages
+  useEffect(() => {
+    if (wantImages) onNeedImages?.(leaf.srcPage)
+  }, [wantImages, leaf.srcPage, onNeedImages])
+
   if (!viewport) {
     return <div className="page-wrap" ref={wrapRef} data-page-index={index} style={{ minHeight: 400 }} />
   }
@@ -927,9 +955,11 @@ function PageView(props: Props): JSX.Element {
   const cal = effCal(calibration)
   const measuring = tool.startsWith('measure') || tool === 'calibrate'
   const isMarkupTool = MARKUP_TOOLS.includes(tool)
-  const passthru = tool === 'select' || isMarkupTool
+  const editingImages = tool === 'image-edit'
+  const imageRecords = annotations.filter((a): a is ImageEditAnnot => a.type === 'imgedit')
+  const passthru = tool === 'select' || isMarkupTool || editingImages
   const cursor =
-    tool === 'select'
+    tool === 'select' || editingImages
       ? 'default'
       : tool === 'text' || tool === 'edit-text'
         ? 'text'
@@ -1397,6 +1427,22 @@ function PageView(props: Props): JSX.Element {
               )
             })}
         </div>
+        {editingImages && (
+          <ImageLayer
+            width={viewport.width}
+            height={viewport.height}
+            leafId={leaf.id}
+            images={pageImages ?? []}
+            records={imageRecords}
+            toScreen={toScreen}
+            toPdf={toPdf}
+            selected={imageSel ?? null}
+            cropMode={!!imageCrop}
+            bitmaps={imageBitmaps ?? {}}
+            onSelect={onImageSelect ?? (() => {})}
+            onChange={onImageChange ?? (() => {})}
+          />
+        )}
       </div>
     </div>
   )
