@@ -97,7 +97,7 @@ interface DocTab {
   imageDoc: PDFDocument | null
   /** Images found on each source page, filled in as pages are looked at. */
   pageImages: Record<number, PageImage[]>
-  /** Decoded pixels per source page and draw index, for the drag preview. */
+  /** Decoded pixels for the crop guide, keyed `srcPage:drawIndex:imageId`. */
   imageBitmaps: Record<string, HTMLCanvasElement | null>
   /** The embedded image being edited, on the current page. */
   imageSel: ImageSel | null
@@ -135,14 +135,20 @@ const DEFAULT_COLORS = ['#111111', '#b91c1c', '#1d4ed8', '#0a7d29', '#d97706', '
 const EMPTY_ANNOTS: Annotation[] = []
 const NO_BITMAPS: Record<number, HTMLCanvasElement | null> = {}
 
-/** The decoded image previews for one source page, keyed by draw index. */
+/**
+ * The decoded crop guides for one source page, keyed by draw index.
+ * Cache keys are `srcPage:drawIndex:imageId`, so a picture whose pixels were
+ * replaced by an applied crop gets a fresh entry instead of a stale one.
+ */
 function bitmapsByDraw(tab: DocTab, srcPage: number): Record<number, HTMLCanvasElement | null> {
   const prefix = `${srcPage}:`
   const out: Record<number, HTMLCanvasElement | null> = {}
   let any = false
   for (const [key, canvas] of Object.entries(tab.imageBitmaps)) {
     if (!key.startsWith(prefix)) continue
-    out[Number(key.slice(prefix.length))] = canvas
+    const drawIndex = Number(key.slice(prefix.length).split(':')[0])
+    if (!Number.isFinite(drawIndex)) continue
+    out[drawIndex] = canvas
     any = true
   }
   return any ? out : NO_BITMAPS
@@ -1295,6 +1301,20 @@ export default function App(): JSX.Element {
   )
 
 
+  const fitZoom = useCallback(async (mode: 'width' | 'page') => {
+    const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
+    const viewer = viewerRef.current
+    if (!tab || !viewer) return
+    const leaf = tab.model.leaves[Math.max(0, (tab.currentPage || 1) - 1)]
+    if (!leaf) return
+    const page = await tab.pdfDoc.getPage(leaf.srcPage)
+    const vp = page.getViewport({ scale: 1, rotation: (page.rotate + leaf.rotation) % 360 })
+    const availW = viewer.clientWidth - 64
+    const availH = viewer.clientHeight - 56
+    const z = mode === 'width' ? availW / vp.width : Math.min(availW / vp.width, availH / vp.height)
+    setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, zoom: clampZoom(z) } : t)))
+  }, [])
+
   // ---- embedded images ---------------------------------------------------
   //
   // Editing an image means editing the page's content stream, which the
@@ -1481,11 +1501,27 @@ export default function App(): JSX.Element {
     patchActive({ imageCrop: false })
   }, [imageContext, commitModel, patchActive])
 
+  /**
+   * Turn cropping on or off.
+   *
+   * Cropping is done by dragging the corners, and on a full-page scan at
+   * fit-width zoom most of those corners sit below the window — which makes
+   * the whole feature look broken. So entering crop mode fits the page first
+   * whenever the picture doesn't already fit in view.
+   */
   const toggleImageCrop = useCallback(() => {
     const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
     if (!tab?.imageSel) return
-    patchActive({ imageCrop: !tab.imageCrop })
-  }, [patchActive])
+    const turningOn = !tab.imageCrop
+    patchActive({ imageCrop: turningOn })
+    if (!turningOn) return
+    const c = imageContext()
+    const viewer = viewerRef.current
+    if (!c || !viewer) return
+    const ys = [0, 1].flatMap((v) => [0, 1].map((u) => c.m[1] * u + c.m[3] * v + c.m[5]))
+    const heightPt = Math.max(...ys) - Math.min(...ys)
+    if (heightPt * tab.zoom > viewer.clientHeight - 56) void fitZoom('page')
+  }, [patchActive, imageContext, fitZoom])
 
   /**
    * Trim the cropped-away pixels for real, instead of hiding them behind a
@@ -1542,14 +1578,20 @@ export default function App(): JSX.Element {
     setStatus(`Image trimmed to ${stored.width} × ${stored.height} px`)
   }, [imageContext, commitModel, patchActive, toast])
 
-  // Decode the selected image once, for the drag preview.
+  // Decode the selected picture only when the crop guide needs it — the decode
+  // is a full pdf.js operator-list pass, far too costly to run on selection.
   useEffect(() => {
     const tab = active
     const sel = tab?.imageSel
-    if (!tab || !sel) return
+    if (!tab || !sel || !tab.imageCrop) return
     const leaf = tab.model.leaves[tab.currentPage - 1]
     if (!leaf) return
-    const key = `${leaf.srcPage}:${sel.drawIndex}`
+    const rec = tab.model.annotations.find(
+      (a): a is ImageEditAnnot =>
+        a.type === 'imgedit' && a.leafId === leaf.id && a.drawIndex === sel.drawIndex && a.instance === sel.instance
+    )
+    // keyed by the pixels it shows, so moving the picture doesn't re-decode it
+    const key = `${leaf.srcPage}:${sel.drawIndex}:${rec?.imageId ?? ''}`
     if (key in tab.imageBitmaps) return
     const shownAt = previewDrawIndex(
       tab.model.annotations.filter((a): a is ImageEditAnnot => a.type === 'imgedit' && a.leafId === leaf.id),
@@ -1566,7 +1608,7 @@ export default function App(): JSX.Element {
     return () => {
       cancelled = true
     }
-  }, [active?.id, active?.imageSel, active?.currentPage, active?.pdfDoc])
+  }, [active?.id, active?.imageSel, active?.imageCrop, active?.currentPage, active?.pdfDoc])
 
   /**
    * Rebuild the document the viewer draws from, with the image edits applied.
@@ -1639,8 +1681,7 @@ export default function App(): JSX.Element {
                   layerConfig,
                   layerVersion: t.layerVersion + 1,
                   imagePreviewSig: sig,
-                  imagePreviewBusy: false,
-                  imageBitmaps: {}
+                  imagePreviewBusy: false
                 }
               : t
           )
@@ -2470,19 +2511,7 @@ export default function App(): JSX.Element {
     [model, scrollToPageIndex]
   )
 
-  const fitZoom = useCallback(async (mode: 'width' | 'page') => {
-    const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
-    const viewer = viewerRef.current
-    if (!tab || !viewer) return
-    const leaf = tab.model.leaves[Math.max(0, (tab.currentPage || 1) - 1)]
-    if (!leaf) return
-    const page = await tab.pdfDoc.getPage(leaf.srcPage)
-    const vp = page.getViewport({ scale: 1, rotation: (page.rotate + leaf.rotation) % 360 })
-    const availW = viewer.clientWidth - 64
-    const availH = viewer.clientHeight - 56
-    const z = mode === 'width' ? availW / vp.width : Math.min(availW / vp.width, availH / vp.height)
-    setTabs((prev) => prev.map((t) => (t.id === tab.id ? { ...t, zoom: clampZoom(z) } : t)))
-  }, [])
+
 
   // update current page as the viewer scrolls (offset-based; display-independent)
   const onViewerScroll = useCallback(() => {
@@ -3119,6 +3148,11 @@ export default function App(): JSX.Element {
         imageInfo={imageSelInfo}
         imageCropMode={!!active?.imageCrop}
         imageBusy={!!active?.imagePreviewBusy}
+        imageScanning={
+          tool === 'image-edit' &&
+          !!active &&
+          !active.pageImages[active.model.leaves[active.currentPage - 1]?.srcPage ?? 0]
+        }
         onImageRotate={rotateImage}
         onImageFlip={flipImage}
         onImageToggleCrop={toggleImageCrop}

@@ -5,7 +5,7 @@ essentials of Nitro and Adobe Acrobat Reader with DirtCAD-style takeoff
 measurements — all running on your machine, no cloud, no account.
 
 The toolbar is a compact ribbon. **File · View · Help** menus sit on the *same
-line* as the **Home · Measure · Pages · Advanced** tabs (the native menu bar is
+line* as the **Home · Draw · Measure · Images · Pages · Advanced** tabs (the native menu bar is
 hidden — Alt still shows it), with find / undo / page nav / zoom on that row too.
 Open, Save, Save As and Print live in the File menu and on their usual shortcuts.
 
@@ -51,20 +51,6 @@ again the moment you pick one. The state is remembered between sessions.
   covered by a clean vector patch. One Ctrl+Z reverts the whole edit.
 - **Layers** — show/hide the document's optional-content layers (CAD exports
   etc.). Hidden layers stay hidden in the saved file and in redacted rasters.
-- **Edit images** — pick any picture that is already part of the page and
-  **move, resize, rotate, crop, copy or delete** it. Drag to move, corners to
-  resize (hold Shift to distort), the round handle to turn; arrow keys nudge,
-  Ctrl+D copies, Delete removes, and **Reset** puts it back exactly as the file
-  had it. Built for tidying up scans.
-  - **Crop** starts as a clipping region so you can keep adjusting it — the
-    faded part is what gets trimmed. **Apply crop** re-encodes the picture with
-    only the part you kept, so the hidden pixels are really gone.
-  - The page is redrawn from a rebuilt copy of the document, so what you see is
-    exactly what saves. The file on disk is untouched until you save, and every
-    step is undoable.
-  - Copies cost nothing — both draws point at the same image data. Pictures
-    nested inside a shared form object are copied first, so editing one page
-    cannot move the same picture on another.
 - Remove restrictions (unlock) also lives here.
 
 **Heavy CAD plan sets open fast on their own**
@@ -118,6 +104,24 @@ again the moment you pick one. The state is remembered between sessions.
   it to fit** (proportional — measurement scales are corrected so calibrated
   lengths still read the same). Nothing is rasterised: text stays text,
   pictures stay editable, and pages already the right size are left alone.
+
+**Images tab**
+- Pick any picture that is already part of the page and **move, resize,
+  rotate, crop, copy or delete** it — built for tidying up scans. Opening the
+  tab arms the tool; click a picture to pick it up.
+- Drag to move, corners to resize (hold Shift to distort), the round handle
+  above it to turn. Arrow keys nudge (Shift for bigger steps), Ctrl+D copies,
+  Delete removes, and **Reset** puts it back exactly as the file had it.
+- **Crop** starts as a clipping region so you can keep adjusting it — the
+  faded part is what gets trimmed, and the page zooms to fit so you can reach
+  all four corners. **Apply crop** re-saves the picture with only the part you
+  kept, so the trimmed pixels are really gone.
+- The page is redrawn from a rebuilt copy of the document, so what you see is
+  exactly what saves. The file on disk is untouched until you save, and every
+  step is undoable.
+- Copies cost nothing — both draws point at the same image data. Pictures
+  nested inside a shared form object are copied first, so editing one page
+  cannot move the same picture on another.
 
 **Draw tab**
 - Plain drawing with no scale and no measurements: **line**, **arrow**,

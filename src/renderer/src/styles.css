@@ -1646,6 +1646,14 @@ select.field-input {
   position: absolute;
   inset: 0;
   overflow: visible;
+  /* Above the text layer (1) and the annotation overlay (2). Without this the
+     OCR text spans on a scanned page swallow every click, and only the blank
+     margin round the edge would select the picture. */
+  z-index: 3;
+  /* Its own compositing layer. The outline changes on every pointer move, and
+     without this each change repaints the full-page canvas underneath it —
+     which on a 300 dpi scan is most of a second per move. */
+  will-change: transform;
 }
 .img-outline {
   fill: transparent;
@@ -1693,42 +1701,17 @@ select.field-input {
   cursor: grab;
 }
 
-/* the contextual image controls on the Advanced tab */
-.tb-imgprops {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--panel-2);
-}
+/* the selected picture's size / state, on the Images tab */
 .tb-imginfo {
   font-size: 12px;
   color: var(--text);
-  margin-right: 4px;
+  margin-left: 4px;
   white-space: nowrap;
 }
-.tb-imginfo.dim {
-  color: var(--muted);
-}
-.tb-mini {
-  min-width: 26px;
-  height: 26px;
-  padding: 0 6px;
-  font-size: 13px;
-  line-height: 1;
-}
-.tb-mini.wide {
-  font-size: 12px;
-}
-.tb-mini.on {
-  background: var(--accent);
-  color: #fff;
-}
-.tb-mini.danger:hover:not(:disabled) {
-  background: #b91c1c;
-  color: #fff;
+/* a bigger, easier catch area round each handle than the 9px square you see */
+.img-handle-hit {
+  fill: transparent;
+  stroke: none;
 }
 
 /* the page-size dialog's extra controls */

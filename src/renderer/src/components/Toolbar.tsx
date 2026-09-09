@@ -80,6 +80,8 @@ interface Props {
   imageCropMode: boolean
   /** The viewer is redrawing the page with the latest image edit. */
   imageBusy: boolean
+  /** Still looking for the pictures on this page. */
+  imageScanning: boolean
   onImageRotate: (deg: number) => void
   onImageFlip: (axis: 'h' | 'v') => void
   onImageToggleCrop: () => void
@@ -266,11 +268,12 @@ const MEASURE_TOOLS: ToolBtn[] = [
 ]
 
 const ZOOM_PRESETS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4]
-type RibbonTab = 'home' | 'draw' | 'measure' | 'pages' | 'advanced'
+type RibbonTab = 'home' | 'draw' | 'measure' | 'images' | 'pages' | 'advanced'
 const RIBBON_TABS: { id: RibbonTab; label: string }[] = [
   { id: 'home', label: 'Home' },
   { id: 'draw', label: 'Draw' },
   { id: 'measure', label: 'Measure' },
+  { id: 'images', label: 'Images' },
   { id: 'pages', label: 'Pages' },
   { id: 'advanced', label: 'Advanced' }
 ]
@@ -329,6 +332,10 @@ export default function Toolbar(props: Props): JSX.Element {
   const pickTab = (id: RibbonTab): void => {
     setTab(id)
     if (collapsed) setPeek(true)
+    // Picking pictures is the only thing the Images tab does, so opening it
+    // arms the tool and leaving it puts the pointer back to plain select.
+    if (id === 'images') onPickTool('image-edit')
+    else if (tool === 'image-edit') onPickTool('select')
   }
 
   // Office-style: the mouse wheel over the ribbon steps through the tabs
@@ -819,6 +826,120 @@ export default function Toolbar(props: Props): JSX.Element {
           </>
         )}
 
+        {tab === 'images' && (
+          <div className="tb-group">
+            <button
+              className={`tb-tool ${tool === 'image-edit' ? 'active' : ''}`}
+              onClick={() => onPickTool('image-edit')}
+              disabled={!props.hasDoc}
+              title="Click a picture on the page to pick it up"
+            >
+              <span className="ico">🖼</span>
+              <span className="lbl">Select picture</span>
+            </button>
+            <div className="tb-sep" />
+            <button
+              className="tb-tool"
+              onClick={() => props.onImageRotate(90)}
+              disabled={!props.imageInfo}
+              title="Turn the picture a quarter turn anticlockwise"
+            >
+              <span className="ico">↺</span>
+              <span className="lbl">Rotate left</span>
+            </button>
+            <button
+              className="tb-tool"
+              onClick={() => props.onImageRotate(-90)}
+              disabled={!props.imageInfo}
+              title="Turn the picture a quarter turn clockwise"
+            >
+              <span className="ico">↻</span>
+              <span className="lbl">Rotate right</span>
+            </button>
+            <button
+              className="tb-tool"
+              onClick={() => props.onImageFlip('h')}
+              disabled={!props.imageInfo}
+              title="Mirror the picture left to right"
+            >
+              <span className="ico">⇄</span>
+              <span className="lbl">Flip across</span>
+            </button>
+            <button
+              className="tb-tool"
+              onClick={() => props.onImageFlip('v')}
+              disabled={!props.imageInfo}
+              title="Mirror the picture top to bottom"
+            >
+              <span className="ico">⇅</span>
+              <span className="lbl">Flip down</span>
+            </button>
+            <div className="tb-sep" />
+            <button
+              className={`tb-tool ${props.imageCropMode ? 'active' : ''}`}
+              onClick={props.onImageToggleCrop}
+              disabled={!props.imageInfo}
+              title="Drag the orange handles to trim the edges. Nothing is thrown away until you use Apply crop, so you can keep adjusting it."
+            >
+              <span className="ico">⛶</span>
+              <span className="lbl">Crop</span>
+            </button>
+            <button
+              className="tb-tool"
+              onClick={props.onImageApplyCrop}
+              disabled={!props.imageInfo?.cropped}
+              title="Re-save the picture with only the part you kept, so the trimmed pixels are really gone"
+            >
+              <span className="ico">✂</span>
+              <span className="lbl">Apply crop</span>
+            </button>
+            <div className="tb-sep" />
+            <button
+              className="tb-tool"
+              onClick={props.onImageDuplicate}
+              disabled={!props.imageInfo}
+              title="Put a second copy of this picture on the page (Ctrl+D)"
+            >
+              <span className="ico">⧉</span>
+              <span className="lbl">Copy</span>
+            </button>
+            <button
+              className="tb-tool warn"
+              onClick={props.onImageDelete}
+              disabled={!props.imageInfo}
+              title="Take this picture off the page (Delete)"
+            >
+              <span className="ico">🗑</span>
+              <span className="lbl">Delete</span>
+            </button>
+            <button
+              className="tb-tool"
+              onClick={props.onImageReset}
+              disabled={!props.imageInfo?.edited || props.imageInfo?.copy}
+              title="Put the picture back exactly where the file had it"
+            >
+              <span className="ico">⟲</span>
+              <span className="lbl">Reset</span>
+            </button>
+            <div className="tb-sep" />
+            {props.imageInfo ? (
+              <span className="tb-imginfo">
+                <b>{props.imageInfo.label}</b>
+                {props.imageInfo.rotation !== 0 && ` · turned ${props.imageInfo.rotation}°`}
+                {props.imageInfo.cropped && ' · cropped'}
+                {props.imageInfo.copy && ' · copy'}
+                {props.imageBusy && ' · redrawing…'}
+              </span>
+            ) : (
+              <span className="rb-hint">
+                {props.imageScanning
+                  ? 'Looking for pictures on this page…'
+                  : 'Click a picture on the page. Drag it to move, corners to resize (Shift distorts), the round handle above it to turn.'}
+              </span>
+            )}
+          </div>
+        )}
+
         {tab === 'pages' && (
           <div className="tb-group">
             <button
@@ -925,73 +1046,6 @@ export default function Toolbar(props: Props): JSX.Element {
             <button className="tb-file" onClick={props.onUnlock} disabled={!props.hasDoc || props.busy} title="Remove owner-password restrictions (print/copy/edit locks)">
               🔓 Remove restrictions
             </button>
-            <div className="tb-sep" />
-            <button
-              className={`tb-tool warn ${tool === 'image-edit' ? 'active' : ''}`}
-              onClick={() => onPickTool(tool === 'image-edit' ? 'select' : 'image-edit')}
-              disabled={!props.hasDoc}
-              title="Pick any picture already on the page and move, resize, rotate, crop, copy or delete it — useful for tidying up scans"
-            >
-              <span className="ico">🖼</span>
-              <span className="lbl">Edit images</span>
-            </button>
-            {tool === 'image-edit' && (
-              <div className="tb-imgprops">
-                {props.imageInfo ? (
-                  <>
-                    <span className="tb-imginfo">
-                      {props.imageInfo.label}
-                      {props.imageInfo.rotation !== 0 && ` · ${props.imageInfo.rotation}°`}
-                      {props.imageInfo.copy && ' · copy'}
-                      {props.imageBusy && ' · redrawing…'}
-                    </span>
-                    <button className="tb-mini" onClick={() => props.onImageRotate(90)} title="Rotate 90° left">
-                      ↺
-                    </button>
-                    <button className="tb-mini" onClick={() => props.onImageRotate(-90)} title="Rotate 90° right">
-                      ↻
-                    </button>
-                    <button className="tb-mini" onClick={() => props.onImageFlip('h')} title="Flip horizontally">
-                      ⇄
-                    </button>
-                    <button className="tb-mini" onClick={() => props.onImageFlip('v')} title="Flip vertically">
-                      ⇅
-                    </button>
-                    <button
-                      className={`tb-mini wide ${props.imageCropMode ? 'on' : ''}`}
-                      onClick={props.onImageToggleCrop}
-                      title="Drag the handles to trim the edges. The trimmed part is hidden, not removed, until you apply it."
-                    >
-                      ⛶ Crop
-                    </button>
-                    <button
-                      className="tb-mini wide"
-                      onClick={props.onImageApplyCrop}
-                      disabled={!props.imageInfo.cropped}
-                      title="Re-encode the picture with only the part you kept, so the trimmed pixels are really gone"
-                    >
-                      Apply crop
-                    </button>
-                    <button className="tb-mini wide" onClick={props.onImageDuplicate} title="Another copy of this picture (Ctrl+D)">
-                      ⧉ Copy
-                    </button>
-                    <button className="tb-mini wide danger" onClick={props.onImageDelete} title="Remove this picture from the page (Delete)">
-                      🗑 Delete
-                    </button>
-                    <button
-                      className="tb-mini wide"
-                      onClick={props.onImageReset}
-                      disabled={!props.imageInfo.edited || props.imageInfo.copy}
-                      title="Put the picture back exactly where the file had it"
-                    >
-                      Reset
-                    </button>
-                  </>
-                ) : (
-                  <span className="tb-imginfo dim">Click a picture on the page. Drag to move, corners to resize (Shift distorts), the round handle to turn.</span>
-                )}
-              </div>
-            )}
             <span className="rb-hint warn">⚠ These tools change the original document content — everything supports Undo.</span>
           </div>
         )}

@@ -18,8 +18,14 @@ import { uid } from './types'
 
 const OPS = pdfjsLib.OPS
 
-/** Biggest bitmap we keep around for a drag preview, per side. */
-const MAX_PREVIEW_DIM = 2400
+/**
+ * Biggest bitmap kept for the crop guide, per side.
+ *
+ * It is drawn translucent behind a crop box, so screen resolution is plenty —
+ * and the cost is not the pixels but the PNG the SVG <image> needs: encoding a
+ * 2400px scan took ~130 ms and made every crop drag stutter.
+ */
+const MAX_PREVIEW_DIM = 700
 
 interface RawImage {
   width: number

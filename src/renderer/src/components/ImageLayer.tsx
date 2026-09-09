@@ -36,7 +36,7 @@ interface Props {
   toPdf: (clientX: number, clientY: number) => Pt
   selected: ImageSel | null
   cropMode: boolean
-  /** Decoded pixels per draw index, when available — used for the drag ghost. */
+  /** Decoded pixels per draw index, when available — used for the crop guide. */
   bitmaps: Record<number, HTMLCanvasElement | null>
   onSelect: (sel: ImageSel | null) => void
   onChange: (rec: ImageEditAnnot, tag?: string) => void
@@ -64,7 +64,9 @@ const HANDLES: { u: number; v: number }[] = [
   { u: 0, v: 1 },
   { u: 0, v: 0.5 }
 ]
-const HANDLE_PX = 8
+const HANDLE_PX = 9
+/** Invisible catch area round each handle — 9px is too small to hit reliably. */
+const HANDLE_HIT_PX = 22
 const ROTATE_REACH_PX = 26
 /** Smallest an image may be scaled to, as a fraction of its current size. */
 const MIN_SCALE = 0.02
@@ -295,12 +297,19 @@ function ImageLayer(props: Props): JSX.Element {
     onChange(recordFor(inst, next.m, next.crop), `img:${drag.sel.drawIndex}:${drag.sel.instance}:${drag.kind}`)
   }
 
+  /**
+   * The arrow points the way the handle actually moves, which is a question
+   * about the screen and not about the image: a rotated picture's "top edge"
+   * handle can be pointing anywhere. So take the direction from the centre to
+   * the handle on screen and pick the nearest of the four resize cursors.
+   */
   const cursorFor = (m: Matrix, h: { u: number; v: number }): string => {
-    if (h.u === 0.5) return 'ns-resize'
-    if (h.v === 0.5) return 'ew-resize'
     const c = toScreen(centreOf(m))
     const p = toScreen(applyM(m, h.u, h.v))
-    return (p.x - c.x) * (p.y - c.y) > 0 ? 'nesw-resize' : 'nwse-resize'
+    const deg = (Math.atan2(p.y - c.y, p.x - c.x) * 180) / Math.PI
+    // screen y runs downwards, so 45 degrees is down-and-right: the NW-SE arrow
+    const oct = ((Math.round(deg / 45) % 4) + 4) % 4
+    return ['ew-resize', 'nwse-resize', 'ns-resize', 'nesw-resize'][oct]
   }
 
   return (
@@ -323,7 +332,6 @@ function ImageLayer(props: Props): JSX.Element {
         const pts = quad(m)
         const poly = pts.map((p) => `${p.x},${p.y}`).join(' ')
         const bitmap = bitmaps[inst.sel.drawIndex]
-        const dragging = !!live && sameSel(live.sel, inst.sel)
         const showFull = isSel && cropMode
 
         // in crop mode the whole image is shown, dimmed outside the crop
@@ -333,15 +341,8 @@ function ImageLayer(props: Props): JSX.Element {
 
         return (
           <g key={key}>
-            {(showFull || dragging) && bitmap && (
-              <ImageGhost
-                canvas={bitmap}
-                matrix={fm}
-                toScreen={toScreen}
-                opacity={showFull ? 0.35 : 0.6}
-                clipId={showFull ? `imgclip-${key}` : undefined}
-                clipPoly={poly}
-              />
+            {showFull && bitmap && (
+              <ImageGhost canvas={bitmap} matrix={fm} toScreen={toScreen} clipId={`imgclip-${key}`} clipPoly={poly} />
             )}
             {showFull && (
               <polygon points={fullPts.map((p) => `${p.x},${p.y}`).join(' ')} className="img-full-outline" />
@@ -367,17 +368,29 @@ function ImageLayer(props: Props): JSX.Element {
                   const at = cropMode
                     ? toScreen(applyM(fm, crop.x + crop.w * h.u, crop.y + crop.h * h.v))
                     : toScreen(applyM(m, h.u, h.v))
+                  const cursor = cursorFor(m, h)
+                  const grab = (e: React.PointerEvent): void => begin(e, inst, cropMode ? 'crop' : 'scale', h)
                   return (
-                    <rect
-                      key={`${h.u},${h.v}`}
-                      className={`img-handle${cropMode ? ' crop' : ''}`}
-                      x={at.x - HANDLE_PX / 2}
-                      y={at.y - HANDLE_PX / 2}
-                      width={HANDLE_PX}
-                      height={HANDLE_PX}
-                      style={{ cursor: cursorFor(m, h) }}
-                      onPointerDown={(e) => begin(e, inst, cropMode ? 'crop' : 'scale', h)}
-                    />
+                    <g key={`${h.u},${h.v}`}>
+                      <rect
+                        className="img-handle-hit"
+                        x={at.x - HANDLE_HIT_PX / 2}
+                        y={at.y - HANDLE_HIT_PX / 2}
+                        width={HANDLE_HIT_PX}
+                        height={HANDLE_HIT_PX}
+                        style={{ cursor }}
+                        onPointerDown={grab}
+                      />
+                      <rect
+                        className={`img-handle${cropMode ? ' crop' : ''}`}
+                        x={at.x - HANDLE_PX / 2}
+                        y={at.y - HANDLE_PX / 2}
+                        width={HANDLE_PX}
+                        height={HANDLE_PX}
+                        style={{ cursor }}
+                        onPointerDown={grab}
+                      />
+                    </g>
                   )
                 })}
               </>
@@ -400,21 +413,19 @@ function canvasHref(canvas: HTMLCanvasElement): string {
   return href
 }
 
-/** The image itself, drawn under a drag or a crop as a translucent guide. */
+/** The picture drawn behind a crop, so you can see what is being trimmed. */
 function ImageGhost({
   canvas,
   matrix,
   toScreen,
-  opacity,
   clipId,
   clipPoly
 }: {
   canvas: HTMLCanvasElement
   matrix: Matrix
   toScreen: (p: Pt) => { x: number; y: number }
-  opacity: number
-  clipId?: string
-  clipPoly?: string
+  clipId: string
+  clipPoly: string
 }): JSX.Element | null {
   // an <image> has its origin at the top-left with y running down, which is
   // (0,1) of the PDF unit square
@@ -425,24 +436,22 @@ function ImageGhost({
   const t = `matrix(${ax.x - o.x},${ax.y - o.y},${ay.x - o.x},${ay.y - o.y},${o.x},${o.y})`
   return (
     <>
-      {clipId && clipPoly && (
-        <clipPath id={clipId}>
-          <polygon points={clipPoly} />
-        </clipPath>
-      )}
-      <image href={href} x={0} y={0} width={1} height={1} transform={t} opacity={opacity} preserveAspectRatio="none" />
-      {clipId && clipPoly && (
-        <image
-          href={href}
-          x={0}
-          y={0}
-          width={1}
-          height={1}
-          transform={t}
-          clipPath={`url(#${clipId})`}
-          preserveAspectRatio="none"
-        />
-      )}
+      <clipPath id={clipId}>
+        <polygon points={clipPoly} />
+      </clipPath>
+      {/* the whole picture, faded: this is the part the crop throws away */}
+      <image href={href} x={0} y={0} width={1} height={1} transform={t} opacity={0.3} preserveAspectRatio="none" />
+      {/* and the part being kept, at full strength */}
+      <image
+        href={href}
+        x={0}
+        y={0}
+        width={1}
+        height={1}
+        transform={t}
+        clipPath={`url(#${clipId})`}
+        preserveAspectRatio="none"
+      />
     </>
   )
 }

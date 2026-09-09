@@ -95,7 +95,7 @@ interface Props {
   /** Which embedded image is selected, and whether its crop is being adjusted. */
   imageSel?: ImageSel | null
   imageCrop?: boolean
-  /** Decoded pixels per draw index, for the drag preview. */
+  /** Decoded pixels per draw index, for the crop guide. */
   imageBitmaps?: Record<number, HTMLCanvasElement | null>
   onImageSelect?: (sel: ImageSel | null) => void
   onImageChange?: (rec: ImageEditAnnot, tag?: string) => void
@@ -984,7 +984,7 @@ function PageView(props: Props): JSX.Element {
             width: renderVp?.width ?? viewport.width,
             height: renderVp?.height ?? viewport.height,
             transform: textScale !== 1 ? `scale(${textScale})` : undefined,
-            pointerEvents: passthru ? 'auto' : 'none'
+            pointerEvents: passthru && !editingImages ? 'auto' : 'none'
           }}
         />
         {ocrWords && ocrWords.length > 0 && (
@@ -993,7 +993,7 @@ function PageView(props: Props): JSX.Element {
             style={{
               width: viewport.width,
               height: viewport.height,
-              pointerEvents: passthru ? 'auto' : 'none'
+              pointerEvents: passthru && !editingImages ? 'auto' : 'none'
             }}
           >
             {ocrWords.map((w, i) => {
