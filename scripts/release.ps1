@@ -71,8 +71,12 @@ if (-not $Notes) { $Notes = (git log -1 --pretty=%s) }
 
 Step "Tagging $tag and pushing main"
 git tag -a $tag -m "PDF Studio $version"
-git push origin main
-git push origin $tag
+# git push reports progress (and "Everything up-to-date") on stderr, which
+# PowerShell 5.1 turns into a terminating error here — go through cmd.
+cmd /c "git push origin main 2>&1"
+if ($LASTEXITCODE -ne 0) { throw 'git push main failed' }
+cmd /c "git push origin $tag 2>&1"
+if ($LASTEXITCODE -ne 0) { throw "git push $tag failed" }
 
 Step "Creating GitHub release $tag"
 gh release create $tag $exe "$exe.blockmap" $yml -R $repo --title "PDF Studio $version" --notes $Notes
