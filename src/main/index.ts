@@ -29,6 +29,40 @@ function pdfFromArgv(argv: string[]): string | null {
   return null
 }
 
+/** What the renderer shows while a file is still being read and parsed. */
+interface OpeningInfo {
+  path: string
+  name: string
+  size: number | null
+}
+
+async function openingInfo(path: string): Promise<OpeningInfo> {
+  let size: number | null = null
+  try {
+    size = (await fs.stat(path)).size
+  } catch {
+    /* the read that follows reports the real error */
+  }
+  return { path, name: path.split(/[\\/]/).pop() || 'document.pdf', size }
+}
+
+/**
+ * Open a file in the window, telling the renderer which file it is before the
+ * (possibly slow — big plan sets, network drives) read, so it can say
+ * "Opening …" instead of sitting on the start screen.
+ */
+async function sendFileToWindow(path: string): Promise<void> {
+  const wc = mainWindow?.webContents
+  if (!wc) return
+  wc.send('opening-file', await openingInfo(path))
+  try {
+    const payload = await readPdfPayload(path)
+    if (!wc.isDestroyed()) wc.send('open-file', payload)
+  } catch (e) {
+    if (!wc.isDestroyed()) wc.send('opening-file-failed', { path, error: e instanceof Error ? e.message : String(e) })
+  }
+}
+
 async function readPdfPayload(path: string): Promise<PdfPayload> {
   const data = await fs.readFile(path)
   return {
@@ -284,14 +318,9 @@ function buildMenu(): void {
   const recentItems: MenuItemConstructorOptions[] = existingRecents().map((r) => ({
     label: r.name,
     sublabel: r.path,
-    click: async () => {
-      try {
-        const payload = await readPdfPayload(r.path)
-        addRecent(r.path)
-        mainWindow?.webContents.send('open-file', payload)
-      } catch {
-        /* file vanished */
-      }
+    click: () => {
+      addRecent(r.path)
+      void sendFileToWindow(r.path)
     }
   }))
   const template: MenuItemConstructorOptions[] = [
@@ -409,7 +438,7 @@ if (runningSelftest) {
     mainWindow.focus()
     if (f) {
       addRecent(f)
-      mainWindow.webContents.send('open-file', await readPdfPayload(f))
+      await sendFileToWindow(f)
     }
   })
   startupFile = pdfFromArgv(process.argv)
@@ -421,6 +450,10 @@ function bootstrap(): void {
     app.setAppUserModelId('ca.dirtpro.pdfstudio')
     await loadRecents()
     buildMenu()
+
+    // Which file the launch asked for, without reading it — lets the renderer
+    // show "Opening …" straight away while getStartupFile does the slow part.
+    ipcMain.handle('app:peekStartupFile', async () => (startupFile ? openingInfo(startupFile) : null))
 
     ipcMain.handle('app:getStartupFile', async () => {
       if (!startupFile) return null

@@ -53,6 +53,10 @@ export function installDevApiShim(): void {
   const startupUrl = new URLSearchParams(location.search).get('file')
 
   const shim: Api = {
+    peekStartupFile: async () =>
+      startupUrl
+        ? { path: startupUrl, name: decodeURIComponent(startupUrl.split('/').pop() || 'document.pdf'), size: null }
+        : null,
     getStartupFile: async () => {
       if (!startupUrl) return null
       try {
@@ -66,6 +70,8 @@ export function installDevApiShim(): void {
       }
     },
     onOpenFile: () => () => {},
+    onOpeningFile: () => () => {},
+    onOpeningFileFailed: () => () => {},
     onMenu: () => () => {},
     openPdf: async () => {
       const f = await pickFile('application/pdf')

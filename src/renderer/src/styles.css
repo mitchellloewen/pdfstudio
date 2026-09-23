@@ -1033,6 +1033,71 @@ select.field-input {
   font-size: 16px;
 }
 
+/* ---------- Opening a file ---------- */
+.opening {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  max-width: 520px;
+  padding: 28px 36px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+.opening-float {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  gap: 14px;
+  padding: 12px 20px;
+  pointer-events: none;
+}
+.opening-spinner {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: opening-spin 0.9s linear infinite;
+}
+.opening-float .opening-spinner {
+  width: 22px;
+  height: 22px;
+}
+@keyframes opening-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.opening-text {
+  min-width: 0;
+}
+.opening-label {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.opening-name {
+  font-size: 17px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.opening-float .opening-name {
+  font-size: 14px;
+}
+.opening-meta {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 /* ---------- Status bar ---------- */
 .statusbar {
   height: 28px;

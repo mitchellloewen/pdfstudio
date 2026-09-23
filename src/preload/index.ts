@@ -30,6 +30,13 @@ export interface PdfPayload {
   bytes: ArrayBuffer
 }
 
+/** A file main is about to read — shown as "Opening …" until it arrives. */
+export interface OpeningInfo {
+  path: string
+  name: string
+  size: number | null
+}
+
 export interface StoredSignature {
   id: string
   ext: string
@@ -50,7 +57,21 @@ export type OcrResult =
   | { ok: false; error: string }
 
 const api = {
+  /** The launch file's name/size without reading it; null when there is none. */
+  peekStartupFile: (): Promise<OpeningInfo | null> => ipcRenderer.invoke('app:peekStartupFile'),
   getStartupFile: (): Promise<PdfPayload | null> => ipcRenderer.invoke('app:getStartupFile'),
+  /** Main is reading a file (double-click into a running app, recent-files menu). */
+  onOpeningFile: (cb: (info: OpeningInfo) => void): (() => void) => {
+    const handler = (_e: unknown, info: OpeningInfo): void => cb(info)
+    ipcRenderer.on('opening-file', handler)
+    return () => ipcRenderer.removeListener('opening-file', handler)
+  },
+  /** That read failed; no open-file will follow for this path. */
+  onOpeningFileFailed: (cb: (fail: { path: string; error: string }) => void): (() => void) => {
+    const handler = (_e: unknown, fail: { path: string; error: string }): void => cb(fail)
+    ipcRenderer.on('opening-file-failed', handler)
+    return () => ipcRenderer.removeListener('opening-file-failed', handler)
+  },
   onOpenFile: (cb: (payload: PdfPayload) => void): (() => void) => {
     const handler = (_e: unknown, payload: PdfPayload): void => cb(payload)
     ipcRenderer.on('open-file', handler)

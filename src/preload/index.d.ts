@@ -8,6 +8,13 @@ export interface PdfPayload {
   bytes: ArrayBuffer
 }
 
+/** A file main is about to read — shown as "Opening …" until it arrives. */
+export interface OpeningInfo {
+  path: string
+  name: string
+  size: number | null
+}
+
 export interface OpenedPdf {
   path: string
   name: string
@@ -49,7 +56,13 @@ export type OcrResult =
   | { ok: false; error: string }
 
 export interface PreloadApi {
+  /** The launch file's name/size without reading it; null when there is none. */
+  peekStartupFile: () => Promise<OpeningInfo | null>
   getStartupFile: () => Promise<PdfPayload | null>
+  /** Main is reading a file (double-click into a running app, recent-files menu). */
+  onOpeningFile: (cb: (info: OpeningInfo) => void) => () => void
+  /** That read failed; no open-file will follow for this path. */
+  onOpeningFileFailed: (cb: (fail: { path: string; error: string }) => void) => () => void
   onOpenFile: (cb: (payload: PdfPayload) => void) => () => void
   onMenu: (cb: (action: string) => void) => () => void
   openPdf: () => Promise<OpenedPdf | null>

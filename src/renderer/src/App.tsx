@@ -56,6 +56,7 @@ import PageView, { FONT_CSS } from './components/PageView'
 import SearchBar from './components/SearchBar'
 import CalibrateDialog from './components/CalibrateDialog'
 import PasswordDialog from './components/PasswordDialog'
+import OpeningNotice, { type OpeningInfo } from './components/OpeningNotice'
 import HeaderFooterDialog, {
   SLOT_POS,
   expandTemplate,
@@ -256,6 +257,14 @@ export default function App(): JSX.Element {
   const [statusByTab, setStatusByTab] = useState<Record<string, string>>({})
   const [idleStatus, setIdleStatus] = useState('Open a PDF to begin.')
   const [busy, setBusy] = useState(false)
+  /**
+   * Files on their way in (read by main, then parsed by pdf.js). A big plan
+   * set can take many seconds, so the window says which file it is working on
+   * instead of sitting on the start screen. Keyed by path (name when unsaved).
+   */
+  const [opening, setOpening] = useState<OpeningInfo[]>([])
+  /** False until we know whether Windows launched us on a file (no start-screen flash). */
+  const [launchChecked, setLaunchChecked] = useState(false)
   const [toasts, setToasts] = useState<Toast[]>([])
   const [confirmCloseId, setConfirmCloseId] = useState<string | null>(null)
   const [recents, setRecents] = useState<{ path: string; name: string }[]>([])
@@ -329,7 +338,13 @@ export default function App(): JSX.Element {
   const setSearchQuery = useCallback((q: string) => patchSearch({ query: q }), [patchSearch])
   const setSearchFuzzy = useCallback((f: boolean) => patchSearch({ fuzzy: f }), [patchSearch])
 
-  const status = activeId ? statusByTab[activeId] ?? 'Ready.' : idleStatus
+  const status = activeId
+    ? statusByTab[activeId] ?? 'Ready.'
+    : opening.length
+      ? `Opening ${opening[0].name}…`
+      : launchChecked
+        ? idleStatus
+        : ''
 
   /**
    * The status line belongs to a document, not to the window: switching tabs
@@ -602,8 +617,17 @@ export default function App(): JSX.Element {
     []
   )
 
+  const beginOpening = useCallback((info: OpeningInfo) => {
+    setOpening((prev) => (prev.some((o) => o.path === info.path) ? prev : [...prev, info]))
+  }, [])
+  const endOpening = useCallback((key: string) => {
+    setOpening((prev) => prev.filter((o) => o.path !== key))
+  }, [])
+
   const openBytes = useCallback(
     async (bytes: ArrayBuffer, name: string, srcPath: string | null = null) => {
+      const key = srcPath || name
+      beginOpening({ path: key, name, size: bytes.byteLength })
       setBusy(true)
       try {
         await buildTab(bytes, name, { srcPath })
@@ -619,9 +643,10 @@ export default function App(): JSX.Element {
         }
       } finally {
         setBusy(false)
+        endOpening(key)
       }
     },
-    [buildTab, toast]
+    [buildTab, toast, beginOpening, endOpening]
   )
 
   const handleOpen = useCallback(async () => {
@@ -631,15 +656,17 @@ export default function App(): JSX.Element {
 
   const openRecent = useCallback(
     async (path: string) => {
+      beginOpening({ path, name: path.split(/[\\/]/).pop() || path, size: null })
       const payload = await window.api.openPath(path)
       if (!payload) {
+        endOpening(path)
         toast('That file could not be opened (moved or deleted?).', 'err')
         setRecents((r) => r.filter((x) => x.path !== path))
         return
       }
       await openBytes(payload.bytes, payload.name, payload.path)
     },
-    [openBytes, toast]
+    [openBytes, toast, beginOpening, endOpening]
   )
 
   const submitPassword = useCallback(
@@ -2960,19 +2987,44 @@ export default function App(): JSX.Element {
   }, [])
 
   // ---- open files from Windows (double-click / menu) --------------------
+  // The launch file, once. Peek first (cheap: name + size) so "Opening …" is
+  // up before the slow read. Sequential on purpose — if both raced, a fast
+  // read could finish before the peek landed and leave the notice stuck. Not
+  // tied to the listener effect below: a re-run of that mid-load would drop
+  // the file.
+  const startupRef = useRef(false)
   useEffect(() => {
-    let alive = true
-    window.api.getStartupFile().then((f) => {
-      if (alive && f) openBytes(f.bytes, f.name, f.path || null)
+    if (startupRef.current) return
+    startupRef.current = true
+    void (async () => {
+      const info = await window.api.peekStartupFile().catch(() => null)
+      if (info) beginOpening(info)
+      setLaunchChecked(true)
+      if (!info) return
+      const f = await window.api.getStartupFile()
+      if (f) void openBytes(f.bytes, f.name, f.path || null)
+      else {
+        endOpening(info.path)
+        toast(`Could not open ${info.name}.`, 'err')
+      }
+    })()
+  }, [openBytes, beginOpening, endOpening, toast])
+
+  useEffect(() => {
+    const offOpening = window.api.onOpeningFile(beginOpening)
+    const offFailed = window.api.onOpeningFileFailed((fail) => {
+      endOpening(fail.path)
+      toast(`Could not open ${fail.path.split(/[\\/]/).pop()}: ${fail.error}`, 'err')
     })
     const offOpen = window.api.onOpenFile((f) => openBytes(f.bytes, f.name, f.path || null))
     const offMenu = window.api.onMenu(runMenuAction)
     return () => {
-      alive = false
+      offOpening()
+      offFailed()
       offOpen()
       offMenu()
     }
-  }, [openBytes, runMenuAction])
+  }, [openBytes, runMenuAction, beginOpening, endOpening, toast])
 
   // ---- in-app updates -----------------------------------------------------
   // Main does the checking and downloading; we only show state. A manual
@@ -3328,40 +3380,45 @@ export default function App(): JSX.Element {
           </>
         ) : (
           <div className="empty">
-            <div className="empty-card">
-              <h1>PDF Studio</h1>
-              <p>Read, edit, fill, sign, measure, and unlock PDFs — all offline on your machine.</p>
-              <div className="empty-actions">
-                <button className="primary big" onClick={handleOpen}>
-                  Open a PDF
-                </button>
-                <button className="big secondary" onClick={() => void openCombine()} title="Join several PDFs and pictures into one new document">
-                  Combine files…
-                </button>
-              </div>
-              <p className="drop-hint">…or drag &amp; drop PDFs anywhere in this window (drop pictures to combine them)</p>
-              {recents.length > 0 && (
-                <div className="recents">
-                  <div className="recents-title">Recent files</div>
-                  {recents.slice(0, 8).map((r) => (
-                    <button key={r.path} className="recent-item" title={r.path} onClick={() => void openRecent(r.path)}>
-                      {r.name}
-                    </button>
-                  ))}
+            {opening.length > 0 ? (
+              <OpeningNotice files={opening} />
+            ) : !launchChecked ? null : (
+              <div className="empty-card">
+                <h1>PDF Studio</h1>
+                <p>Read, edit, fill, sign, measure, and unlock PDFs — all offline on your machine.</p>
+                <div className="empty-actions">
+                  <button className="primary big" onClick={handleOpen}>
+                    Open a PDF
+                  </button>
+                  <button className="big secondary" onClick={() => void openCombine()} title="Join several PDFs and pictures into one new document">
+                    Combine files…
+                  </button>
                 </div>
-              )}
-              <ul className="feature-list">
-                <li>Open several PDFs at once in tabs — print, search, select &amp; copy text</li>
-                <li>Combine PDFs &amp; pictures into one file · rearrange, rotate, insert, delete &amp; extract pages</li>
-                <li>Headers &amp; footers — page numbers, dates, file name, any text</li>
-                <li>Draw lines, arrows, boxes, circles, polygons &amp; freehand — no scale needed</li>
-                <li>Whiteout (true redaction), text, checkmarks, highlights and your signature</li>
-                <li>Fill forms — save them fillable or flattened · full undo/redo</li>
-                <li>Calibrate &amp; measure lengths, areas and arcs · strip owner-password locks</li>
-              </ul>
-            </div>
+                <p className="drop-hint">…or drag &amp; drop PDFs anywhere in this window (drop pictures to combine them)</p>
+                {recents.length > 0 && (
+                  <div className="recents">
+                    <div className="recents-title">Recent files</div>
+                    {recents.slice(0, 8).map((r) => (
+                      <button key={r.path} className="recent-item" title={r.path} onClick={() => void openRecent(r.path)}>
+                        {r.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <ul className="feature-list">
+                  <li>Open several PDFs at once in tabs — print, search, select &amp; copy text</li>
+                  <li>Combine PDFs &amp; pictures into one file · rearrange, rotate, insert, delete &amp; extract pages</li>
+                  <li>Headers &amp; footers — page numbers, dates, file name, any text</li>
+                  <li>Draw lines, arrows, boxes, circles, polygons &amp; freehand — no scale needed</li>
+                  <li>Whiteout (true redaction), text, checkmarks, highlights and your signature</li>
+                  <li>Fill forms — save them fillable or flattened · full undo/redo</li>
+                  <li>Calibrate &amp; measure lengths, areas and arcs · strip owner-password locks</li>
+                </ul>
+              </div>
+            )}
           </div>
         )}
+        {active && opening.length > 0 && <OpeningNotice files={opening} floating />}
       </div>
       <div className="statusbar">
         <span>{status}</span>
