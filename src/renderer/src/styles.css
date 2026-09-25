@@ -848,8 +848,22 @@ body {
   transform-origin: 0% 0%;
   user-select: text;
 }
+/* Page text never paints the native selection: its per-span boxes overlap
+   (darker slivers) and run on over trailing spaces. PageView draws one bar per
+   line into .sel-bars instead (selectionLines.ts). */
 .textLayer ::selection {
-  background: rgba(37, 99, 235, 0.35);
+  background: transparent;
+}
+.sel-bars {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.sel-bars > div {
+  position: absolute;
+  background: rgb(37 99 235 / 0.32);
+  mix-blend-mode: multiply;
 }
 .page-overlay {
   z-index: 2;

@@ -68,6 +68,7 @@ import CombineDialog from './components/CombineDialog'
 import { addImagePage, buildCombined, describeFile, kindForName, type CombineItem } from './pdf/combine'
 import PagePickDialog from './components/PagePickDialog'
 import PageSizeDialog from './components/PageSizeDialog'
+import { mergeIntoLines, selectionGlyphRects, type Bar } from './selectionLines'
 
 interface DocTab {
   id: string
@@ -2281,22 +2282,14 @@ export default function App(): JSX.Element {
       const wraps = Array.from(viewerRef.current?.querySelectorAll<HTMLElement>('[data-page-index]') ?? [])
       if (!wraps.length) return false
 
-      const perPage = new Map<number, { wrap: HTMLElement; rects: DOMRect[] }>()
-      for (let ri = 0; ri < sel.rangeCount; ri++) {
-        for (const r of Array.from(sel.getRangeAt(ri).getClientRects())) {
-          if (r.width < 1 || r.height < 1) continue
-          const cx = r.left + r.width / 2
-          const cy = r.top + r.height / 2
-          const wrap = wraps.find((w) => {
-            const b = w.getBoundingClientRect()
-            return cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom
-          })
-          if (!wrap) continue
-          const idx = Number(wrap.dataset.pageIndex)
-          const entry = perPage.get(idx) || { wrap, rects: [] }
-          entry.rects.push(r)
-          perPage.set(idx, entry)
-        }
+      const perPage = new Map<number, { wrap: HTMLElement; bars: Bar[] }>()
+      for (const wrap of wraps) {
+        const glyphs = selectionGlyphRects(sel, wrap)
+        if (!glyphs.length) continue
+        // one rect per line, not per text run: no ragged edges or doubled-up
+        // overlaps, and the saved QuadPoints look clean in any reader
+        const bars = mergeIntoLines(glyphs, kind === 'highlight' ? 'fill' : 'none')
+        perPage.set(Number(wrap.dataset.pageIndex), { wrap, bars })
       }
       if (!perPage.size) return false
 
@@ -2305,31 +2298,18 @@ export default function App(): JSX.Element {
       const mkColor = kind === 'highlight' && color === '#111111' ? '#ffd400' : color
 
       const annots: MarkupAnnot[] = []
-      for (const [idx, { wrap, rects }] of perPage) {
+      for (const [idx, { wrap, bars }] of perPage) {
         const leaf = tab.model.leaves[idx]
         const stage = wrap.querySelector<HTMLElement>('.page-stage')
         if (!leaf || !stage) continue
         const page = await tab.pdfDoc.getPage(leaf.srcPage)
         const vp = page.getViewport({ scale: tab.zoom, rotation: (page.rotate + leaf.rotation) % 360 })
         const sb = stage.getBoundingClientRect()
-        // drop container-artifact rects that span whole blocks
-        const hs = rects.map((r) => r.height).sort((a, b) => a - b)
-        const med = hs[Math.floor(hs.length / 2)] || 0
-        const boxes: Box[] = []
-        for (const r of rects) {
-          if (med && r.height > med * 1.9) continue
+        const boxes: Box[] = bars.map((r) => {
           const [x1, y1] = vp.convertToPdfPoint(r.left - sb.left, r.top - sb.top)
           const [x2, y2] = vp.convertToPdfPoint(r.right - sb.left, r.bottom - sb.top)
-          const box: Box = {
-            x: Math.min(x1, x2),
-            y: Math.min(y1, y2),
-            w: Math.abs(x2 - x1),
-            h: Math.abs(y2 - y1)
-          }
-          if (!boxes.some((b) => Math.abs(b.x - box.x) < 0.5 && Math.abs(b.y - box.y) < 0.5 && Math.abs(b.w - box.w) < 0.5)) {
-            boxes.push(box)
-          }
-        }
+          return { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) }
+        })
         if (boxes.length) annots.push({ id: uid(), leafId: leaf.id, type: 'markup', kind, rects: boxes, color: mkColor })
       }
       if (!annots.length) return false

@@ -40,6 +40,7 @@ import { getEditableLines, type EditableLine } from '../pdf/edit'
 import type { PageImage } from '../pdf/images'
 import ImageLayer, { type ImageSel } from './ImageLayer'
 import type { HRect } from '../pdf/search'
+import { mergeIntoLines, selectionGlyphRects, type Bar } from '../selectionLines'
 
 /** CSS equivalents of the PDF standard fonts used for baking. */
 export const FONT_CSS: Record<FontKey, { family: string; weight: number }> = {
@@ -255,6 +256,7 @@ function PageView(props: Props): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
   const textHostRef = useRef<HTMLDivElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
   const [page, setPage] = useState<PDFPageProxy | null>(null)
   const [visible, setVisible] = useState(index < 3)
   const [renderVp, setRenderVp] = useState<Viewport | null>(null)
@@ -435,6 +437,46 @@ function PageView(props: Props): JSX.Element {
       tl.cancel()
     }
   }, [page, renderVp, visible])
+
+  // Selection paint: the native ::selection is switched off for page text
+  // (styles.css) and we draw one bar per line instead — see selectionLines.ts.
+  // Bars are stored as fractions of the stage so a zoom that hasn't re-laid
+  // the text layer yet still lines up.
+  const [selBars, setSelBars] = useState<Bar[]>([])
+  useEffect(() => {
+    if (!visible) {
+      setSelBars([])
+      return
+    }
+    let raf = 0
+    const measure = (): void => {
+      raf = 0
+      const stage = stageRef.current
+      const sel = window.getSelection()
+      if (!stage || !sel || sel.isCollapsed || sel.rangeCount === 0) {
+        setSelBars((b) => (b.length ? [] : b))
+        return
+      }
+      const sb = stage.getBoundingClientRect()
+      if (sb.width < 1 || sb.height < 1) return
+      const bars = mergeIntoLines(selectionGlyphRects(sel, stage), 'fill').map((r) => ({
+        left: (r.left - sb.left) / sb.width,
+        top: (r.top - sb.top) / sb.height,
+        right: (r.right - sb.left) / sb.width,
+        bottom: (r.bottom - sb.top) / sb.height
+      }))
+      setSelBars((b) => (b.length || bars.length ? bars : b))
+    }
+    const onChange = (): void => {
+      if (!raf) raf = requestAnimationFrame(measure)
+    }
+    document.addEventListener('selectionchange', onChange)
+    onChange()
+    return () => {
+      document.removeEventListener('selectionchange', onChange)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [visible])
 
   // ---- coordinate helpers ----------------------------------------------
   const toScreen = useCallback(
@@ -967,23 +1009,54 @@ function PageView(props: Props): JSX.Element {
           ? 'crosshair'
           : 'copy'
   const textScale = renderVp ? viewport.width / renderVp.width : 1
+  // pdf.js lays text out in the page's unrotated frame and leaves turning it
+  // to the viewer CSS (pdf_viewer.css's [data-main-rotation] rules). We don't
+  // ship that file, so rotate here — without it, text on a rotated page sat
+  // sideways over the canvas and selection/markup landed in the wrong place.
+  const textRot = renderVp ? ((renderVp.rotation % 360) + 360) % 360 : 0
+  const textTurn =
+    textRot === 90
+      ? ' rotate(90deg) translateY(-100%)'
+      : textRot === 180
+        ? ' rotate(180deg) translate(-100%, -100%)'
+        : textRot === 270
+          ? ' rotate(270deg) translateX(-100%)'
+          : ''
+  const textTransform = `${textScale !== 1 ? `scale(${textScale})` : ''}${textTurn}`.trim()
+  const textSideways = textRot === 90 || textRot === 270
 
   return (
     <div className="page-wrap" ref={wrapRef} data-page-index={index}>
       <div className="page-num">Page {index + 1}</div>
       <div
+        ref={stageRef}
         className="page-stage"
         style={{ width: viewport.width, height: viewport.height }}
         onPointerDown={onStagePointerDown}
       >
         <canvas ref={canvasRef} className="page-canvas" />
+        {selBars.length > 0 && (
+          <div className="sel-bars">
+            {selBars.map((b, i) => (
+              <div
+                key={i}
+                style={{
+                  left: `${b.left * 100}%`,
+                  top: `${b.top * 100}%`,
+                  width: `${(b.right - b.left) * 100}%`,
+                  height: `${(b.bottom - b.top) * 100}%`
+                }}
+              />
+            ))}
+          </div>
+        )}
         <div
           ref={textHostRef}
           className="textLayer"
           style={{
-            width: renderVp?.width ?? viewport.width,
-            height: renderVp?.height ?? viewport.height,
-            transform: textScale !== 1 ? `scale(${textScale})` : undefined,
+            width: renderVp ? (textSideways ? renderVp.height : renderVp.width) : viewport.width,
+            height: renderVp ? (textSideways ? renderVp.width : renderVp.height) : viewport.height,
+            transform: textTransform || undefined,
             pointerEvents: passthru && !editingImages ? 'auto' : 'none'
           }}
         />
