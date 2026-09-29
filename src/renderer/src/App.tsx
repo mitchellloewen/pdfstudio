@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PDFDocument, type PDFRef } from 'pdf-lib'
-import { loadPdf, isPasswordException, type PDFDocumentProxy } from './pdf/pdfjs'
+import { loadPdf, isPasswordException, normalizeUnicode, type PDFDocumentProxy } from './pdf/pdfjs'
 import {
   DEFAULT_DRAW_STYLE,
   MARKUP_TOOLS,
@@ -2935,6 +2935,25 @@ export default function App(): JSX.Element {
     duplicateImage,
     editSelectedImage
   ])
+
+  // Page text copies as plain text only. Chromium's default copy also puts
+  // HTML on the clipboard carrying the app's dark-theme text colour (#e7ebf3),
+  // so pasting into Gmail/Outlook/Word gave near-white text on white.
+  useEffect(() => {
+    const onCopy = (e: ClipboardEvent): void => {
+      const sel = window.getSelection()
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !e.clipboardData) return
+      // check the ends, not the common ancestor — a drag across two pages has
+      // its common ancestor above both text layers
+      const inText = (n: Node | null): boolean =>
+        !!(n instanceof Element ? n : n?.parentElement)?.closest('.textLayer')
+      if (!inText(sel.anchorNode) && !inText(sel.focusNode)) return
+      e.preventDefault()
+      e.clipboardData.setData('text/plain', normalizeUnicode(sel.toString().replace(/\0/g, '')))
+    }
+    document.addEventListener('copy', onCopy)
+    return () => document.removeEventListener('copy', onCopy)
+  }, [])
 
   // One router for both menu sources: the native menu bar (Alt) and the
   // ribbon's own File menu.

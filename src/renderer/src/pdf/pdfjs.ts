@@ -95,5 +95,6 @@ export function canvasToJpeg(canvas: HTMLCanvasElement, quality = 0.92): Promise
 export const FORM_ANNOT_MODE = pdfjsLib.AnnotationMode.ENABLE_FORMS
 
 export const TextLayer = pdfjsLib.TextLayer
+export const normalizeUnicode = pdfjsLib.normalizeUnicode
 export type { PDFDocumentProxy, PDFPageProxy }
 export { pdfjsLib }
