@@ -15,7 +15,10 @@
  * version → download the installer to userData/updates → verify SHA-512 →
  * tell the renderer it is ready. "Restart to update" runs the installer
  * silently (/S) with --force-run so the app comes straight back on the new
- * version, then quits. Nothing is ever installed without that click.
+ * version, then quits. If the user never clicks it, an ordinary quit runs the
+ * same installer without --force-run: the update lands and the app stays
+ * closed until they next open it. A Windows shutdown/log-off skips that (the
+ * installer could be killed half-way) and leaves it for the next quit.
  */
 import { app, net, type BrowserWindow } from 'electron'
 import { spawn } from 'child_process'
@@ -187,18 +190,35 @@ export function checkForUpdates(manual: boolean): Promise<void> {
   return inFlight
 }
 
+let installStarted = false
+let skipInstallOnQuit = false
+
+function runInstaller(relaunch: boolean): boolean {
+  if (installStarted || !readyInstaller || !existsSync(readyInstaller.path)) return false
+  installStarted = true
+  // Same flags electron-updater passes to an NSIS installer.
+  const args = relaunch ? ['--updated', '/S', '--force-run'] : ['--updated', '/S']
+  const child = spawn(readyInstaller.path, args, { detached: true, stdio: 'ignore', windowsHide: true })
+  child.unref()
+  return true
+}
+
 /** Run the verified installer silently and quit; it relaunches the app. */
 export function installUpdate(): boolean {
-  if (!readyInstaller || !existsSync(readyInstaller.path)) return false
-  // Same flags electron-updater passes to an NSIS installer.
-  const child = spawn(readyInstaller.path, ['--updated', '/S', '--force-run'], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true
-  })
-  child.unref()
+  if (!runInstaller(true)) return false
   setTimeout(() => app.quit(), 300)
   return true
+}
+
+/** Called from will-quit: install a downloaded update without reopening the app. */
+export function installOnQuit(): void {
+  if (!app.isPackaged || skipInstallOnQuit) return
+  runInstaller(false)
+}
+
+/** Windows is shutting down or logging off — don't start an installer it would kill. */
+export function cancelInstallOnQuit(): void {
+  skipInstallOnQuit = true
 }
 
 export function initUpdater(opts: { window: () => BrowserWindow | null; onState?: (s: UpdateState) => void }): void {

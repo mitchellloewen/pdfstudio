@@ -5,7 +5,16 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import os from 'os'
 import { createWorker, type Worker as TessWorker } from 'tesseract.js'
-import { RELEASES_PAGE, checkForUpdates, getUpdateState, initUpdater, installUpdate, type UpdateState } from './updater'
+import {
+  RELEASES_PAGE,
+  cancelInstallOnQuit,
+  checkForUpdates,
+  getUpdateState,
+  initUpdater,
+  installOnQuit,
+  installUpdate,
+  type UpdateState
+} from './updater'
 
 const execFileP = promisify(execFile)
 
@@ -253,6 +262,7 @@ function createWindow(): void {
     })
     if (r !== 0) e.preventDefault()
   })
+  mainWindow.on('session-end', () => cancelInstallOnQuit())
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
     console.error('[renderer did-fail-load]', code, desc, url)
@@ -789,6 +799,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  installOnQuit()
   const p = tessP
   tessP = null
   p?.then((w) => w.terminate()).catch(() => {})

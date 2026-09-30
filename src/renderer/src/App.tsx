@@ -3039,7 +3039,7 @@ export default function App(): JSX.Element {
     return window.api.onUpdate((s) => {
       setUpdateState(s)
       if (s.state === 'ready') {
-        toast(`PDF Studio ${s.version} is downloaded — Help → Restart to update when you're ready.`, 'ok')
+        toast(`PDF Studio ${s.version} is downloaded — it installs when you close PDF Studio, or Help → Restart to update now.`, 'ok')
         manualCheckRef.current = false
       } else if (s.state === 'none' && manualCheckRef.current) {
         toast(`You're up to date (${s.version}).`, 'info')
