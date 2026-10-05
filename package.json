@@ -1,6 +1,6 @@
 {
   "name": "pdf-studio",
-  "version": "2.2.6",
+  "version": "2.2.7",
   "description": "PDF Studio â€” a local PDF reader, editor, form-filler, signer and takeoff tool",
   "author": "Dirt Pro Inc",
   "main": "./out/main/index.js",

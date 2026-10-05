@@ -5,12 +5,11 @@
  * window if it ran inline. The worker posts progress as it goes and transfers
  * the finished bytes back.
  */
-import { optimizePdf, type ShrinkStats } from './shrink'
-import type { OptimizeOptions } from './optimize'
+import { optimizePdf, type ShrinkOptions, type ShrinkStats } from './shrink'
 
 export interface OptimizeRequest {
   bytes: ArrayBuffer
-  opts?: OptimizeOptions
+  opts?: ShrinkOptions
 }
 
 export type OptimizeResponse =

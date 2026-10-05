@@ -27,6 +27,7 @@ import { ocrPageWords, pageHasText, parseOcrCache, sha256Hex } from './pdf/ocr'
 import { CLOSED_KINDS } from './pdf/draw'
 import { runSearch, type SearchMatch, type HRect } from './pdf/search'
 import { optimizePdfInWorker } from './pdf/optimizeClient'
+import { countHugeImages } from './pdf/hugeimages'
 import type { EditableLine } from './pdf/edit'
 import {
   applyImageEdits,
@@ -94,6 +95,10 @@ interface DocTab {
   /** Set once a background speed-up has been started (or ruled out) for this
    *  tab, so a slow page can't kick off the work more than once. */
   speedUpTried?: boolean
+  /** The file carries oversized images (600 dpi plan scans), so pages stay
+   *  blank until the downsampled render copy is in. Letting pdf.js start on
+   *  them first would tie its worker up for 10–20 s per page. */
+  renderHold?: boolean
   // ---- embedded-image editing ----
   /** pdf-lib copy of srcBytes, loaded on demand to scan pages for images. */
   imageDoc: PDFDocument | null
@@ -307,6 +312,7 @@ export default function App(): JSX.Element {
   /** Per tab, the pdf-lib copy of its source bytes used for image editing. */
   const imageDocRef = useRef<Record<string, Promise<PDFDocument | null>>>({})
   const ocrRunRef = useRef<((tabId: string) => void) | null>(null)
+  const speedUpRef = useRef<((tabId: string) => void) | null>(null)
   const ocrTokenRef = useRef<Record<string, number>>({})
   const sigsRef = useRef<SigItem[]>([])
   const activeSigRef = useRef<SigItem | null>(null)
@@ -542,6 +548,16 @@ export default function App(): JSX.Element {
         /* no layer support in this file */
       }
 
+      // Plan sheets scanned at 600 dpi: decided here, from the bytes, because
+      // waiting for a slow render (noteRenderTime) never fires — those pages
+      // don't finish drawing at all.
+      let renderHold = false
+      try {
+        renderHold = countHugeImages(new Uint8Array(srcBytes)) > 0
+      } catch {
+        /* scan is best-effort */
+      }
+
       // open at fit-width
       let zoom = 1.25
       try {
@@ -578,7 +594,8 @@ export default function App(): JSX.Element {
         imageSel: null,
         imageCrop: false,
         imagePreviewSig: '',
-        imagePreviewBusy: false
+        imagePreviewBusy: false,
+        renderHold
       }
       histRef.current[newTab.id] = { past: [], future: [] }
       delete imageDocRef.current[newTab.id]
@@ -612,8 +629,10 @@ export default function App(): JSX.Element {
 
       // OCR any scanned (text-less) pages in the background. Deferred a tick:
       // the scheduler reads tabsRef, which only carries the new tab after the
-      // state update above has rendered.
-      setTimeout(() => ocrRunRef.current?.(newTab.id), 100)
+      // state update above has rendered. A held tab builds its render copy
+      // first, and startSpeedUp starts OCR once that is in.
+      if (renderHold) setTimeout(() => speedUpRef.current?.(newTab.id), 100)
+      else setTimeout(() => ocrRunRef.current?.(newTab.id), 100)
     },
     []
   )
@@ -814,8 +833,9 @@ export default function App(): JSX.Element {
   )
 
   /**
-   * A page took too long to draw. Build (or fetch) an optimised render copy in
-   * the background and swap it in when it is ready.
+   * A page took too long to draw — or, for a held tab, the file has oversized
+   * images. Build (or fetch) an optimised render copy in the background and
+   * swap it in when it is ready.
    *
    * Runs at most once per tab. The result is cached on disk against a hash of
    * the original bytes, so this is a one-time cost per document — the same
@@ -826,44 +846,72 @@ export default function App(): JSX.Element {
       const tab = tabsRef.current.find((t) => t.id === tabId)
       if (!tab || tab.speedUpTried) return
       setTabs((ts) => ts.map((t) => (t.id === tabId ? { ...t, speedUpTried: true } : t)))
-
-      const hash = await sha256Hex(tab.srcBytes).catch(() => null)
-      if (hash) {
-        const cached = await window.api.optCacheGet(hash).catch(() => null)
-        if (cached && cached.byteLength) {
-          if (await applyFastDoc(tabId, cached)) {
-            setStatus('Ready. (using cached fast copy)', tabId)
-            window.setTimeout(() => setStatus('Ready.', tabId), 4000)
-          }
-          return
-        }
-      }
-
-      setStatus('Heavy drawing detected — speeding up in the background…', tabId)
+      const images = !!tab.renderHold
+      let swapped = false
       try {
-        const { bytes, stats } = await optimizePdfInWorker(tab.srcBytes, {}, (p) => {
-          setStatus(`Speeding up in the background… ${p.label}`, tabId)
+        const hash = await sha256Hex(tab.srcBytes).catch(() => null)
+        // Downsampled images make the copy lossy, so it is cached under its
+        // own key — Build a faster copy reads the plain hash and must never
+        // pick it up as a file to save.
+        const key =
+          hash && images
+            ? await sha256Hex(new TextEncoder().encode(hash + ':images').buffer as ArrayBuffer).catch(() => null)
+            : hash
+        if (key) {
+          const cached = await window.api.optCacheGet(key).catch(() => null)
+          if (cached && cached.byteLength) {
+            swapped = await applyFastDoc(tabId, cached)
+            if (swapped) {
+              setStatus('Ready. (using cached fast copy)', tabId)
+              window.setTimeout(() => setStatus('Ready.', tabId), 4000)
+            }
+            return
+          }
+        }
+
+        const what = images ? 'Preparing large scanned pages for viewing' : 'Speeding up in the background'
+        setStatus(images ? `${what}…` : 'Heavy drawing detected — speeding up in the background…', tabId)
+        const { bytes, stats } = await optimizePdfInWorker(tab.srcBytes, { images }, (p) => {
+          setStatus(`${what}… ${p.label}`, tabId)
         })
         const savedOps =
           stats.segmentsBefore - stats.segmentsAfter + stats.wrappersFlattened * 2 + stats.strokesMerged
-        if (savedOps < 10000) {
+        if (savedOps < 10000 && !stats.imagesDownsampled) {
           setStatus('Ready.', tabId)
           return
         }
         // Cache first: even if the tab has since closed, the next open wins.
-        if (hash) void window.api.optCacheSet(hash, bytes.slice(0)).catch(() => {})
-        if (await applyFastDoc(tabId, bytes)) {
-          toast(
-            `Speeded up for viewing: ${(savedOps / 1e6).toFixed(1)}M redundant drawing ` +
-              `operations skipped. Your file on disk is unchanged.`,
-            'ok'
-          )
+        if (key) void window.api.optCacheSet(key, bytes.slice(0)).catch(() => {})
+        swapped = await applyFastDoc(tabId, bytes)
+        if (swapped) {
+          const parts: string[] = []
+          if (stats.imagesDownsampled) {
+            parts.push(
+              `${stats.imagesDownsampled} oversized scan${stats.imagesDownsampled === 1 ? '' : 's'} ` +
+                'drawn at screen resolution'
+            )
+          }
+          if (savedOps >= 10000) parts.push(`${(savedOps / 1e6).toFixed(1)}M redundant drawing operations skipped`)
+          toast(`Speeded up for viewing: ${parts.join(', ')}. Your file on disk is unchanged.`, 'ok')
         }
+        setStatus('Ready.', tabId)
       } catch (e) {
         // Never surface this as an error — the document still works, just slowly.
         console.warn('background speed-up failed', e)
-      } finally {
         setStatus('Ready.', tabId)
+      } finally {
+        // Release the hold whether or not the copy came through — slow pages
+        // beat blank ones. srcBytes identifies the document: a tab rebuilt in
+        // place meanwhile (flatten, unlock) has its own hold and its own run.
+        if (images) {
+          setTabs((ts) =>
+            ts.map((t) => (t.id === tabId && t.srcBytes === tab.srcBytes ? { ...t, renderHold: false } : t))
+          )
+        }
+        // OCR rasterises from the render document, and a run in progress
+        // aborts when that document is swapped — so start it (again) now.
+        // Pages it already finished come straight from its cache.
+        if (images || swapped) setTimeout(() => ocrRunRef.current?.(tabId), 100)
       }
     },
     [applyFastDoc, toast]
@@ -2167,6 +2215,10 @@ export default function App(): JSX.Element {
     ocrRunRef.current = (id: string) => void runOcr(id)
   }, [runOcr])
 
+  useEffect(() => {
+    speedUpRef.current = (id: string) => void startSpeedUp(id)
+  }, [startSpeedUp])
+
   // ---- Signatures -------------------------------------------------------
   useEffect(() => {
     let alive = true
@@ -3329,6 +3381,7 @@ export default function App(): JSX.Element {
                 onCollapse={() => setSidebarCollapsed(true)}
                 layerConfig={active.layerConfig ?? undefined}
                 layerVersion={active.layerVersion}
+                holdRender={!!active.renderHold}
               />
             )}
             <div className="viewer" ref={viewerRef} onScroll={onViewerScroll}>
@@ -3336,6 +3389,7 @@ export default function App(): JSX.Element {
                 <PageView
                   key={leaf.id}
                   pdfDoc={active.pdfDoc}
+                  holdRender={!!active.renderHold}
                   leaf={leaf}
                   index={idx}
                   zoom={active.zoom}

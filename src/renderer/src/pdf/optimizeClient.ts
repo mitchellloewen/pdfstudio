@@ -1,8 +1,7 @@
 /** Main-thread side of the content-stream optimiser worker. */
 import OptimizeWorker from './optimize.worker?worker'
 import type { OptimizeRequest, OptimizeResponse } from './optimize.worker'
-import type { ShrinkStats } from './shrink'
-import type { OptimizeOptions } from './optimize'
+import type { ShrinkOptions, ShrinkStats } from './shrink'
 
 export type { ShrinkStats }
 
@@ -18,7 +17,7 @@ export interface OptimizeProgress {
  */
 export function optimizePdfInWorker(
   bytes: ArrayBuffer,
-  opts?: OptimizeOptions,
+  opts?: ShrinkOptions,
   onProgress?: (p: OptimizeProgress) => void
 ): Promise<{ bytes: ArrayBuffer; stats: ShrinkStats }> {
   return new Promise((resolve, reject) => {

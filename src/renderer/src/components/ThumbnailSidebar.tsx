@@ -17,6 +17,8 @@ interface Props {
   onCollapse: () => void
   layerConfig?: unknown
   layerVersion: number
+  /** Don't rasterise yet — the app is preparing a lighter render copy. */
+  holdRender?: boolean
 }
 
 function Thumb({
@@ -24,13 +26,15 @@ function Thumb({
   leaf,
   n,
   layerConfig,
-  layerVersion
+  layerVersion,
+  holdRender
 }: {
   pdfDoc: PDFDocumentProxy
   leaf: PageLeaf
   n: number
   layerConfig?: unknown
   layerVersion: number
+  holdRender?: boolean
 }): JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const holderRef = useRef<HTMLDivElement>(null)
@@ -52,7 +56,7 @@ function Thumb({
   }, [])
 
   useEffect(() => {
-    if (!visible) return
+    if (!visible || holdRender) return
     let cancelled = false
     let task: ReturnType<PDFPageProxy['render']> | null = null
     pdfDoc.getPage(leaf.srcPage).then((page) => {
@@ -79,7 +83,7 @@ function Thumb({
       cancelled = true
       task?.cancel()
     }
-  }, [pdfDoc, leaf.srcPage, leaf.rotation, visible, layerConfig, layerVersion])
+  }, [pdfDoc, leaf.srcPage, leaf.rotation, visible, layerConfig, layerVersion, holdRender])
   return (
     <div ref={holderRef} className="thumb-holder">
       <canvas ref={canvasRef} className="thumb-canvas" title={`Page ${n}`} />
@@ -148,7 +152,7 @@ export default function ThumbnailSidebar(props: Props): JSX.Element {
             onDoubleClick={() => props.onJump(leaf.id)}
           >
             <div className="thumb-inner">
-              <Thumb pdfDoc={pdfDoc} leaf={leaf} n={i + 1} layerConfig={props.layerConfig} layerVersion={props.layerVersion} />
+              <Thumb pdfDoc={pdfDoc} leaf={leaf} n={i + 1} layerConfig={props.layerConfig} layerVersion={props.layerVersion} holdRender={props.holdRender} />
             </div>
             <div className="thumb-bar">
               <span className="pn">{i + 1}</span>

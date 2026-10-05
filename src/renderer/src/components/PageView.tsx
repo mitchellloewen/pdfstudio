@@ -91,6 +91,8 @@ interface Props {
   /** Reports how long a page took to rasterise, so the app can spot a
    *  document that is too heavy for pdf.js and offer to speed it up. */
   onRenderTime?: (ms: number) => void
+  /** Don't rasterise yet — the app is preparing a lighter render copy. */
+  holdRender?: boolean
   /** Images embedded in this page, once the app has scanned for them. */
   pageImages?: PageImage[] | null
   /** Which embedded image is selected, and whether its crop is being adjusted. */
@@ -243,6 +245,7 @@ function PageView(props: Props): JSX.Element {
     layerConfig,
     layerVersion,
     onRenderTime,
+    holdRender,
     pageImages,
     imageSel,
     imageCrop,
@@ -271,11 +274,17 @@ function PageView(props: Props): JSX.Element {
 
   const totalRotation = ((leaf.rotation % 360) + 360) % 360
 
-  // Load page proxy
+  // Load page proxy. `page` lags a swap of `pdfDoc` by one fetch, so the
+  // document it came from is kept alongside: rasterising the outgoing page
+  // after a render-copy swap would start a full decode of the very images the
+  // copy exists to avoid, and the shared pdf.js worker can't abort one.
+  const pageDocRef = useRef<PDFDocumentProxy | null>(null)
   useEffect(() => {
     let alive = true
     pdfDoc.getPage(leaf.srcPage).then((p) => {
-      if (alive) setPage(p)
+      if (!alive) return
+      pageDocRef.current = pdfDoc
+      setPage(p)
     })
     return () => {
       alive = false
@@ -344,7 +353,7 @@ function PageView(props: Props): JSX.Element {
   // every time the zoom changes. Painting offscreen keeps the previous bitmap
   // on screen, CSS-scaled, until there is something better to show.
   useEffect(() => {
-    if (!page || !renderVp || !visible) return
+    if (!page || !renderVp || !visible || holdRender || pageDocRef.current !== pdfDoc) return
     const canvas = canvasRef.current
     if (!canvas) return
     const dpr = window.devicePixelRatio || 1
@@ -397,7 +406,7 @@ function PageView(props: Props): JSX.Element {
     // onRenderTime is a stable callback from App; excluded so a new identity
     // can never force a re-rasterise of an expensive page.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, renderVp, visible, layerConfig, layerVersion])
+  }, [page, renderVp, visible, layerConfig, layerVersion, holdRender])
 
   // Edit Text mode: load the clickable line map for this page
   useEffect(() => {

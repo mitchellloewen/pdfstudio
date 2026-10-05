@@ -20,8 +20,9 @@ import {
   decodePDFRawStream
 } from 'pdf-lib'
 import { optimizeContentStream, type OptimizeOptions, type OptimizeStats } from './optimize'
+import { downsampleImages, type ImageStats } from './hugeimages'
 
-export interface ShrinkStats extends OptimizeStats {
+export interface ShrinkStats extends OptimizeStats, ImageStats {
   /** Content streams rewritten (pages + form XObjects). */
   streams: number
   pages: number
@@ -29,6 +30,14 @@ export interface ShrinkStats extends OptimizeStats {
   fileAfter: number
   /** Wall-clock milliseconds. */
   ms: number
+}
+
+export interface ShrinkOptions extends OptimizeOptions {
+  /**
+   * Also downsample oversized images (see hugeimages.ts). Lossy, so only for
+   * the background render copy — never for a file the user will keep.
+   */
+  images?: boolean
 }
 
 export interface ShrinkResult {
@@ -76,7 +85,7 @@ function formMatrix(dict: PDFDict): Mat {
 
 export async function optimizePdf(
   src: ArrayBuffer | Uint8Array,
-  opts: OptimizeOptions & { onProgress?: (done: number, total: number, label: string) => void } = {}
+  opts: ShrinkOptions & { onProgress?: (done: number, total: number, label: string) => void } = {}
 ): Promise<ShrinkResult> {
   const t0 = Date.now()
   const srcBytes = src instanceof Uint8Array ? src : new Uint8Array(src)
@@ -95,7 +104,11 @@ export async function optimizePdf(
     pages: doc.getPageCount(),
     fileBefore: srcBytes.length,
     fileAfter: 0,
-    ms: 0
+    ms: 0,
+    imagesDownsampled: 0,
+    imagesSkipped: 0,
+    imagePixelsBefore: 0,
+    imagePixelsAfter: 0
   }
   const add = (s: OptimizeStats): void => {
     stats.segmentsBefore += s.segmentsBefore
@@ -106,6 +119,12 @@ export async function optimizePdf(
     stats.bytesBefore += s.bytesBefore
     stats.bytesAfter += s.bytesAfter
     stats.streams++
+  }
+
+  // --- oversized images ----------------------------------------------------
+  if (opts.images) {
+    const im = await downsampleImages(doc, deflate, (d, t) => opts.onProgress?.(d, t, `image ${d}/${t}`))
+    Object.assign(stats, im)
   }
 
   // --- collect the work list ------------------------------------------------

@@ -744,7 +744,11 @@ function bootstrap(): void {
       const outPath = join(tmpDir, 'out.pdf')
       try {
         await fs.writeFile(inPath, Buffer.from(args.bytes))
-        const argv = ['--decrypt']
+        // --deterministic-id: by default qpdf writes a fresh, time-based /ID on
+        // every run, so the same locked file decrypted to different bytes on
+        // each open and the OCR and fast-copy caches (keyed by a hash of these
+        // bytes) never hit for it.
+        const argv = ['--deterministic-id', '--decrypt']
         if (args.password) argv.push(`--password=${args.password}`)
         argv.push(inPath, outPath)
         await execFileP(qpdf, argv, { windowsHide: true })

@@ -1,7 +1,10 @@
 /**
  * Parity check for "render from the optimised copy, save from the original".
  *
- *   npx tsx test/optimize-parity.ts <file.pdf> [more.pdf …]
+ *   npx tsx test/optimize-parity.ts [--images] <file.pdf> [more.pdf …]
+ *
+ * `--images` also downsamples oversized images, as the background render copy
+ * does for 600 dpi plan scans (hugeimages.ts).
  *
  * PDF Studio draws its own overlays — text layer, form fields, optional-content
  * layers, OCR words, Edit-Text line maps — from whatever document pdf.js has
@@ -53,7 +56,8 @@ async function describe(bytes: Uint8Array): Promise<Record<string, unknown>> {
 }
 
 async function main(): Promise<void> {
-  const files = process.argv.slice(2)
+  const images = process.argv.includes('--images')
+  const files = process.argv.slice(2).filter((a) => a !== '--images')
   if (!files.length) {
     console.error('usage: npx tsx test/optimize-parity.ts <file.pdf> …')
     process.exit(2)
@@ -62,7 +66,7 @@ async function main(): Promise<void> {
   for (const f of files) {
     const src = readFileSync(f)
     const ab = src.buffer.slice(src.byteOffset, src.byteOffset + src.byteLength) as ArrayBuffer
-    const { bytes } = await optimizePdf(ab)
+    const { bytes } = await optimizePdf(ab, { images })
     const a = await describe(src)
     const b = await describe(bytes)
     const ja = JSON.stringify(a, null, 1)
