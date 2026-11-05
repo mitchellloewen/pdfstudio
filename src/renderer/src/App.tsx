@@ -171,6 +171,35 @@ function bitmapsByDraw(tab: DocTab, srcPage: number): Record<number, HTMLCanvasE
 }
 const HISTORY_LIMIT = 100
 const clampZoom = (z: number): number => Math.min(5, Math.max(0.2, +z.toFixed(3)))
+
+/**
+ * The spot on the page under the mouse when a wheel zoom starts. It is kept as
+ * a fraction of the page rather than a scroll offset because the gaps and
+ * "Page N" labels don't grow with zoom and a centred page doesn't grow from the
+ * left, so multiplying the scroll position drifts further the deeper you are.
+ */
+type ZoomAnchor = { pageIndex: number; fx: number; fy: number; clientX: number; clientY: number }
+
+/** Beside or between pages, this takes the nearest point on the page below. */
+function zoomAnchorAt(viewer: HTMLElement, clientX: number, clientY: number): ZoomAnchor | null {
+  let stage: HTMLElement | null = null
+  for (const s of viewer.querySelectorAll<HTMLElement>('.page-stage')) {
+    stage = s
+    if (s.getBoundingClientRect().bottom >= clientY) break
+  }
+  const pageIndex = Number(stage?.closest<HTMLElement>('[data-page-index]')?.dataset.pageIndex)
+  const r = stage?.getBoundingClientRect()
+  if (!r || !r.width || !r.height || Number.isNaN(pageIndex)) return null
+  const unit = (v: number): number => Math.min(1, Math.max(0, v))
+  return {
+    pageIndex,
+    fx: unit((clientX - r.left) / r.width),
+    fy: unit((clientY - r.top) / r.height),
+    clientX,
+    clientY
+  }
+}
+
 const errMsg = (e: unknown): string => String((e as Error)?.message || e)
 
 function toArrayBuffer(u8: Uint8Array): ArrayBuffer {
@@ -305,7 +334,7 @@ export default function App(): JSX.Element {
   const tabsRef = useRef<DocTab[]>([])
   const activeIdRef = useRef<string | null>(null)
   const zoomRef = useRef(1.25)
-  const zoomAnchorRef = useRef<{ left: number; top: number } | null>(null)
+  const zoomAnchorRef = useRef<ZoomAnchor | null>(null)
   const scrollPosRef = useRef<Record<string, number>>({})
   const scrollRaf = useRef(0)
   const histRef = useRef<Record<string, HistEntry>>({})
@@ -2735,14 +2764,23 @@ export default function App(): JSX.Element {
     if (viewer && activeId) viewer.scrollTop = scrollPosRef.current[activeId] ?? 0
   }, [activeId])
 
-  // apply cursor-anchored scroll after a zoom change (viewport sizes are already updated)
+  // put the anchored spot back under the mouse after a zoom change (page sizes
+  // are already updated). Vertically it always holds; across, a page that fits
+  // on screen stays centred and only a wider one follows the mouse.
   useLayoutEffect(() => {
     const viewer = viewerRef.current
     const a = zoomAnchorRef.current
-    if (viewer && a) {
-      viewer.scrollLeft = a.left
-      viewer.scrollTop = a.top
-      zoomAnchorRef.current = null
+    zoomAnchorRef.current = null
+    if (!viewer || !a) return
+    const stage = viewer.querySelector<HTMLElement>(`[data-page-index="${a.pageIndex}"] .page-stage`)
+    if (!stage) return
+    const r = stage.getBoundingClientRect()
+    viewer.scrollTop += r.top + a.fy * r.height - a.clientY
+    if (r.width <= viewer.clientWidth) {
+      const centre = viewer.getBoundingClientRect().left + viewer.clientWidth / 2
+      viewer.scrollLeft += r.left + r.width / 2 - centre
+    } else {
+      viewer.scrollLeft += r.left + a.fx * r.width - a.clientX
     }
   }, [active?.zoom])
 
@@ -2758,14 +2796,7 @@ export default function App(): JSX.Element {
       const oldZoom = zoomRef.current
       const newZoom = clampZoom(oldZoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12))
       if (newZoom === oldZoom) return
-      const rect = viewer.getBoundingClientRect()
-      const cx = e.clientX - rect.left
-      const cy = e.clientY - rect.top
-      const factor = newZoom / oldZoom
-      zoomAnchorRef.current = {
-        left: (viewer.scrollLeft + cx) * factor - cx,
-        top: (viewer.scrollTop + cy) * factor - cy
-      }
+      zoomAnchorRef.current = zoomAnchorAt(viewer, e.clientX, e.clientY)
       setZoom(newZoom)
     }
 
