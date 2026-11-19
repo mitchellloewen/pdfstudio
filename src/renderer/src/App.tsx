@@ -277,6 +277,8 @@ async function removeWhiteBackground(
 }
 
 const hasFieldAnnots = (m: DocModel): boolean => m.annotations.some((a) => a.type === 'field')
+/** Fillable form fields Flatten would burn into the page. */
+const countFields = (anns: Annotation[]): number => anns.filter((a) => a.type === 'field').length
 
 let toastSeq = 0
 
@@ -1029,7 +1031,8 @@ export default function App(): JSX.Element {
   // ---- Save / Extract / Print ------------------------------------------
   const bakeTab = useCallback(async (tab: DocTab, flatten = false): Promise<Uint8Array> => {
     return bakeAndSave(tab.srcBytes, tab.model, {
-      keepForms: tab.keepForms && hasFieldAnnots(tab.model),
+      // Flatten takes the fillable fields with it, whatever the save setting says
+      keepForms: !flatten && tab.keepForms && hasFieldAnnots(tab.model),
       rasterizeLeaf: makeRasterizer(tab.pdfDoc, tab.layerConfig ?? undefined),
       // saved scans become searchable PDFs in any reader
       ocrWords: (srcPage) => tab.ocrPages[srcPage],
@@ -1102,6 +1105,7 @@ export default function App(): JSX.Element {
     const tab = tabsRef.current.find((t) => t.id === activeIdRef.current)
     if (!tab) return
     const n = countEditable(tab.model.annotations)
+    const nf = countFields(tab.model.annotations)
     setBusy(true)
     setStatus('Flattening…', tab.id)
     try {
@@ -1118,8 +1122,13 @@ export default function App(): JSX.Element {
       patchActive({ dirty: true })
       setTimeout(() => oldDoc.destroy().catch(() => {}), 1500)
       toast(
-        n > 0
-          ? `Flattened ${n} mark${n === 1 ? '' : 's'} into the page. Save to write it to the file.`
+        n + nf > 0
+          ? `Flattened ${[
+              n > 0 ? `${n} mark${n === 1 ? '' : 's'}` : '',
+              nf > 0 ? `${nf} form field${nf === 1 ? '' : 's'}` : ''
+            ]
+              .filter(Boolean)
+              .join(' and ')} into the page. Save to write it to the file.`
           : 'Nothing was editable — the document is already flat.',
         'ok'
       )
@@ -2343,7 +2352,8 @@ export default function App(): JSX.Element {
         signAskedRef.current.add(tabId)
         setTimeout(() => {
           const tab = tabsRef.current.find((t) => t.id === tabId)
-          if (tab && countEditable(tab.model.annotations) > 0) setFlattenAsk('signed')
+          if (tab && countEditable(tab.model.annotations) + countFields(tab.model.annotations) > 0)
+            setFlattenAsk('signed')
         }, 250)
       }
     },
@@ -3249,7 +3259,9 @@ export default function App(): JSX.Element {
 
   const confirmTab = confirmCloseId ? tabs.find((t) => t.id === confirmCloseId) : null
   /** Marks that a save would leave editable — drives the Flatten button's dot. */
-  const flattenCount = model ? countEditable(model.annotations) : 0
+  const flattenMarks = model ? countEditable(model.annotations) : 0
+  const flattenFields = model ? countFields(model.annotations) : 0
+  const flattenCount = flattenMarks + flattenFields
 
   // scale of the page currently in view (calibration is per page)
   const curLeaf = model && active ? model.leaves[Math.max(0, (active.currentPage || 1) - 1)] : null
@@ -3648,8 +3660,11 @@ export default function App(): JSX.Element {
               {flattenAsk === 'signed'
                 ? 'Flatten the document now? '
                 : 'Flatten this document? '}
-              {flattenCount} mark{flattenCount === 1 ? '' : 's'} — text, checks, X&rsquo;s, circles and
-              markup — become part of the page. They stop being editable, here and in any other PDF
+              {flattenMarks > 0 &&
+                `${flattenMarks} mark${flattenMarks === 1 ? '' : 's'} (text, checks, X’s, circles, markup)`}
+              {flattenMarks > 0 && flattenFields > 0 && ' and '}
+              {flattenFields > 0 && `${flattenFields} fillable form field${flattenFields === 1 ? '' : 's'}`}{' '}
+              become part of the page. They stop being editable, here and in any other PDF
               editor. Measurements, whiteout and signatures are already part of the page.
             </p>
             <div className="modal-actions">

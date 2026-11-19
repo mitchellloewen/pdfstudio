@@ -640,8 +640,8 @@ export default function Toolbar(props: Props): JSX.Element {
               disabled={!props.hasDoc || props.busy}
               title={
                 props.flattenCount > 0
-                  ? `Flatten ${props.flattenCount} editable mark${props.flattenCount === 1 ? '' : 's'} into the page — after this they can't be edited here or in any other PDF editor`
-                  : 'Nothing to flatten — this document has no editable marks'
+                  ? `Flatten ${props.flattenCount} editable item${props.flattenCount === 1 ? '' : 's'} (marks and form fields) into the page — after this they can't be edited here or in any other PDF editor`
+                  : 'Nothing to flatten — this document has no editable marks or form fields'
               }
             >
               <span className="ico">
