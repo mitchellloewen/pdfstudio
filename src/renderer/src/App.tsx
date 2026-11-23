@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PDFDocument, type PDFRef } from 'pdf-lib'
 import { loadPdf, isPasswordException, normalizeUnicode, type PDFDocumentProxy } from './pdf/pdfjs'
+import { log, logWarn, mb, stepTimer, SLOW_DRAW_MS } from './log'
 import {
   DEFAULT_DRAW_STYLE,
   MARKUP_TOOLS,
@@ -344,6 +345,8 @@ export default function App(): JSX.Element {
   const imageDocRef = useRef<Record<string, Promise<PDFDocument | null>>>({})
   const ocrRunRef = useRef<((tabId: string) => void) | null>(null)
   const speedUpRef = useRef<((tabId: string) => void) | null>(null)
+  /** When each tab's open began, until its first page has drawn (for the log). */
+  const openStartRef = useRef<Record<string, number>>({})
   const ocrTokenRef = useRef<Record<string, number>>({})
   const sigsRef = useRef<SigItem[]>([])
   const activeSigRef = useRef<SigItem | null>(null)
@@ -502,7 +505,17 @@ export default function App(): JSX.Element {
       } = {}
     ) => {
       let srcBytes = bytes
-      let doc = await loadPdf(srcBytes, opts.password)
+      const timer = stepTimer(`${opts.replaceId ? 'rebuild' : 'open'} ${name} (${mb(bytes.byteLength)})`)
+      let doc: PDFDocumentProxy
+      try {
+        doc = await loadPdf(srcBytes, opts.password)
+      } catch (e) {
+        // a password prompt is not a failure; the caller asks and retries
+        if (!isPasswordException(e).needsPassword) timer.fail(e)
+        else log(`open ${name}: password required`)
+        throw e
+      }
+      timer.step('parse')
 
       // Permission-locked files (owner password only, so they open without
       // asking) display fine — pdf.js decrypts transparently — but their
@@ -524,6 +537,7 @@ export default function App(): JSX.Element {
       } catch (e) {
         console.warn('could not pre-decrypt locked file', e)
       }
+      timer.step(unlocked ? 'unlock+reparse' : 'permissions')
 
       // A file we saved with editable marks says so in its Keywords. Lift those
       // annotations back out into the model and strip them from the document,
@@ -545,6 +559,7 @@ export default function App(): JSX.Element {
       } catch (e) {
         console.warn('could not restore editable annotations', e)
       }
+      timer.step(restored ? 'restore-marks+reparse' : 'metadata')
 
       const leaves: PageLeaf[] = []
       for (let i = 1; i <= doc.numPages; i++) leaves.push({ id: uid(), srcPage: i, rotation: 0 })
@@ -578,6 +593,7 @@ export default function App(): JSX.Element {
       } catch {
         /* no layer support in this file */
       }
+      timer.step('layers')
 
       // Plan sheets scanned at 600 dpi: decided here, from the bytes, because
       // waiting for a slow render (noteRenderTime) never fires — those pages
@@ -588,6 +604,7 @@ export default function App(): JSX.Element {
       } catch {
         /* scan is best-effort */
       }
+      timer.step('huge-image-scan')
 
       // open at fit-width
       let zoom = 1.25
@@ -599,6 +616,7 @@ export default function App(): JSX.Element {
       } catch {
         /* keep default */
       }
+      timer.step('page1-size')
 
       const newTab: DocTab = {
         id: opts.replaceId ?? uid(),
@@ -630,6 +648,12 @@ export default function App(): JSX.Element {
       }
       histRef.current[newTab.id] = { past: [], future: [] }
       delete imageDocRef.current[newTab.id]
+      timer.done(
+        `${doc.numPages} pages` +
+          (layers ? `, ${layers.length} layers` : '') +
+          (renderHold ? ', 600 dpi scan → render held for a light copy' : '')
+      )
+      openStartRef.current[newTab.id] = performance.now()
       setTabs((prev) =>
         opts.replaceId ? prev.map((t) => (t.id === opts.replaceId ? newTab : t)) : [...prev, newTab]
       )
@@ -641,8 +665,12 @@ export default function App(): JSX.Element {
       )
 
       // form-field detection runs in the background so big docs open instantly
+      const tFields = performance.now()
       detectFields(doc, leaves)
         .then((fields) => {
+          const ms = performance.now() - tFields
+          if (fields.length || ms > SLOW_DRAW_MS)
+            log(`form fields: ${fields.length} found in ${Math.round(ms)} ms (${name})`)
           if (!fields.length) return
           setTabs((prev) =>
             prev.map((t) =>
@@ -678,6 +706,7 @@ export default function App(): JSX.Element {
   const openBytes = useCallback(
     async (bytes: ArrayBuffer, name: string, srcPath: string | null = null) => {
       const key = srcPath || name
+      log(`open ${name}: ${mb(bytes.byteLength)} received by the window`)
       beginOpening({ path: key, name, size: bytes.byteLength })
       setBusy(true)
       try {
@@ -879,6 +908,9 @@ export default function App(): JSX.Element {
       setTabs((ts) => ts.map((t) => (t.id === tabId ? { ...t, speedUpTried: true } : t)))
       const images = !!tab.renderHold
       let swapped = false
+      const t0 = performance.now()
+      const label = `speed-up ${tab.model.fileName}`
+      log(`${label}: starting (${images ? 'oversized scanned images' : 'a page drew slowly'})`)
       try {
         const hash = await sha256Hex(tab.srcBytes).catch(() => null)
         // Downsampled images make the copy lossy, so it is cached under its
@@ -892,6 +924,9 @@ export default function App(): JSX.Element {
           const cached = await window.api.optCacheGet(key).catch(() => null)
           if (cached && cached.byteLength) {
             swapped = await applyFastDoc(tabId, cached)
+            log(
+              `${label}: cached fast copy (${mb(cached.byteLength)}) ${swapped ? 'swapped in' : 'NOT used'} after ${Math.round(performance.now() - t0)} ms`
+            )
             if (swapped) {
               setStatus('Ready. (using cached fast copy)', tabId)
               window.setTimeout(() => setStatus('Ready.', tabId), 4000)
@@ -907,6 +942,11 @@ export default function App(): JSX.Element {
         })
         const savedOps =
           stats.segmentsBefore - stats.segmentsAfter + stats.wrappersFlattened * 2 + stats.strokesMerged
+        log(
+          `${label}: optimised in ${Math.round(performance.now() - t0)} ms — ${stats.imagesDownsampled || 0} images downsampled, ` +
+            `${savedOps} drawing ops saved` +
+            (savedOps < 10000 && !stats.imagesDownsampled ? ' — not worth swapping, kept the original' : '')
+        )
         if (savedOps < 10000 && !stats.imagesDownsampled) {
           setStatus('Ready.', tabId)
           return
@@ -928,7 +968,7 @@ export default function App(): JSX.Element {
         setStatus('Ready.', tabId)
       } catch (e) {
         // Never surface this as an error — the document still works, just slowly.
-        console.warn('background speed-up failed', e)
+        console.warn(`${label}: failed after ${Math.round(performance.now() - t0)} ms`, e)
         setStatus('Ready.', tabId)
       } finally {
         // Release the hold whether or not the copy came through — slow pages
@@ -955,11 +995,22 @@ export default function App(): JSX.Element {
    */
   const SLOW_PAGE_MS = 1200
   const noteRenderTime = useCallback(
-    (ms: number) => {
-      if (ms < SLOW_PAGE_MS) return
+    (ms: number, info: { page: number; scale: number; px: number }) => {
       const id = activeIdRef.current
       if (!id) return
       const tab = tabsRef.current.find((t) => t.id === id)
+      const what = `page ${info.page} of ${tab?.model.fileName ?? '?'} at ${Math.round(info.scale * 100)}% (${(info.px / 1e6).toFixed(1)} MP)`
+      const began = openStartRef.current[id]
+      if (began !== undefined) {
+        delete openStartRef.current[id]
+        const since = performance.now() - began
+        const line = `first page drawn ${Math.round(since)} ms after the file was parsed — ${what} took ${Math.round(ms)} ms`
+        if (since > 3000) logWarn(line + ' — SLOW')
+        else log(line)
+      } else if (ms >= SLOW_DRAW_MS) {
+        ;(ms >= SLOW_PAGE_MS ? logWarn : log)(`slow draw: ${what} took ${Math.round(ms)} ms`)
+      }
+      if (ms < SLOW_PAGE_MS) return
       if (!tab || tab.speedUpTried || tab.dirty) return
       void startSpeedUp(id)
     },
@@ -1051,7 +1102,12 @@ export default function App(): JSX.Element {
       setBusy(true)
       setStatus('Saving…', tabId)
       try {
+        const tBake = performance.now()
         const bytes = await bakeTab(tab)
+        log(
+          `save ${tab.model.fileName}: built ${mb(bytes.byteLength)} in ${Math.round(performance.now() - tBake)} ms ` +
+            `(${tab.model.leaves.length} pages, ${tab.model.annotations.length} marks)`
+        )
         const buf = toArrayBuffer(bytes)
         if (!saveAs && tab.srcPath) {
           const res = await window.api.savePdfToPath(tab.srcPath, buf)
@@ -1187,10 +1243,14 @@ export default function App(): JSX.Element {
     setBusy(true)
     setStatus('Preparing to print…', tab.id)
     try {
+      const pt = stepTimer(`print ${tab.model.fileName}`)
       const bytes = await bakeTab(tab)
+      pt.step('build')
       const html = await buildPrintHtml(bytes, (d, t) =>
         setStatus(`Preparing page ${d} of ${t} for print…`, tab.id)
       )
+      pt.step('rasterise pages')
+      pt.done(`${tab.model.leaves.length} pages`)
       const res = await window.api.printHtml(html)
       if (!res.ok && res.error && !/cancel/i.test(res.error)) toast('Print failed: ' + res.error, 'err')
       setStatus('Ready.', tab.id)
@@ -2595,7 +2655,9 @@ export default function App(): JSX.Element {
     setBusy(true)
     setStatus(`Combining ${items.length} file${items.length === 1 ? '' : 's'}…`, startedOn)
     try {
+      const tc = performance.now()
       const bytes = toArrayBuffer(await buildCombined(items))
+      log(`combine: ${items.length} files → ${mb(bytes.byteLength)} in ${Math.round(performance.now() - tc)} ms`)
       const first = items[0].name.replace(/\.(pdf|png|jpe?g)$/i, '')
       const name = items.length === 1 ? `${first}.pdf` : `${first} + ${items.length - 1} more.pdf`
       await buildTab(bytes, name, { dirty: true })

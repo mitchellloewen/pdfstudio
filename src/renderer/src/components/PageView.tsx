@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FORM_ANNOT_MODE, TextLayer, type PDFDocumentProxy, type PDFPageProxy } from '../pdf/pdfjs'
+import { log, SLOW_DRAW_MS } from '../log'
 import {
   CIRCLE_STROKE_PT,
   MARKUP_TOOLS,
@@ -90,7 +91,7 @@ interface Props {
   layerVersion: number
   /** Reports how long a page took to rasterise, so the app can spot a
    *  document that is too heavy for pdf.js and offer to speed it up. */
-  onRenderTime?: (ms: number) => void
+  onRenderTime?: (ms: number, info: { page: number; scale: number; px: number }) => void
   /** Don't rasterise yet — the app is preparing a lighter render copy. */
   holdRender?: boolean
   /** Images embedded in this page, once the app has scanned for them. */
@@ -385,7 +386,7 @@ function PageView(props: Props): JSX.Element {
     task.promise.then(
       () => {
         if (!alive) return
-        onRenderTime?.(performance.now() - startedAt)
+        onRenderTime?.(performance.now() - startedAt, { page: index + 1, scale: renderVp.scale, px: w * h })
         const dst = canvasRef.current
         if (!dst) return
         dst.width = w
@@ -438,9 +439,16 @@ function PageView(props: Props): JSX.Element {
       viewport: renderVp
     })
     let cancelled = false
-    tl.render().catch((e: unknown) => {
-      if (!cancelled) console.warn('text layer failed', e)
-    })
+    const t0 = performance.now()
+    tl.render().then(
+      () => {
+        const ms = performance.now() - t0
+        if (!cancelled && ms >= SLOW_DRAW_MS) log(`slow text layer: page ${index + 1} took ${Math.round(ms)} ms`)
+      },
+      (e: unknown) => {
+        if (!cancelled) console.warn(`text layer failed on page ${index + 1}`, e)
+      }
+    )
     return () => {
       cancelled = true
       tl.cancel()

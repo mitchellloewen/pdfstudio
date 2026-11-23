@@ -3,8 +3,10 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './styles.css'
 import { installDevApiShim } from './devApiShim'
+import { installRendererLogging } from './log'
 
 installDevApiShim()
+installRendererLogging()
 
 class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
   constructor(props: { children: React.ReactNode }) {

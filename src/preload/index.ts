@@ -97,6 +97,8 @@ const api = {
   setDirty: (dirty: boolean): void => ipcRenderer.send('app:setDirty', dirty),
   /** Window/app commands driven by the ribbon's File / View / Help menus. */
   appCommand: (cmd: string): void => ipcRenderer.send('app:command', cmd),
+  /** Append a line to the local diagnostic log (%APPDATA%\pdf-studio\logs). */
+  log: (level: 'INFO' | 'WARN' | 'ERROR', msg: string): void => ipcRenderer.send('log:write', level, msg),
   /** In-app updates (GitHub Releases). State events arrive as they happen. */
   onUpdate: (cb: (s: UpdateState) => void): (() => void) => {
     const handler = (_e: unknown, s: UpdateState): void => cb(s)

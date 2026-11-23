@@ -90,6 +90,8 @@ export function installDevApiShim(): void {
     addRecent: () => {},
     setDirty: () => {},
     appCommand: (cmd: string) => console.log('[shim] appCommand:', cmd),
+    // no-op: the renderer forwards console.* here, so logging to console would loop
+    log: () => {},
     onUpdate: () => () => {},
     getUpdateState: async () => ({ state: 'idle' as const }),
     checkForUpdates: () => console.log('[shim] checkForUpdates'),

@@ -79,6 +79,8 @@ export interface PreloadApi {
   addRecent: (path: string) => void
   setDirty: (dirty: boolean) => void
   appCommand: (cmd: string) => void
+  /** Append a line to the local diagnostic log (%APPDATA%\pdf-studio\logs). */
+  log: (level: 'INFO' | 'WARN' | 'ERROR', msg: string) => void
   onUpdate: (cb: (s: UpdateState) => void) => () => void
   getUpdateState: () => Promise<UpdateState>
   checkForUpdates: () => void

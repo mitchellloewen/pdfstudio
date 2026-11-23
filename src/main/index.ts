@@ -15,8 +15,33 @@ import {
   installUpdate,
   type UpdateState
 } from './updater'
+import { errText, fileName, log, logDir, logError, logWarn, mb, pruneLogs, whereIs, writeLog, type Level } from './log'
 
 const execFileP = promisify(execFile)
+
+/** One-time machine context at the top of each session. */
+function logSessionStart(): void {
+  const cpus = os.cpus()
+  log(
+    `=== PDF Studio ${app.getVersion()} starting` +
+      `${app.isPackaged ? '' : ' (dev)'} — Electron ${process.versions.electron}, Chrome ${process.versions.chrome}`
+  )
+  log(
+    `machine: Windows ${os.release()}, ${cpus.length} threads (${(cpus[0]?.model || '?').trim()}), ` +
+      `RAM ${(os.totalmem() / 1073741824).toFixed(1)} GB total / ${(os.freemem() / 1073741824).toFixed(1)} GB free`
+  )
+  // Mapped network drives (Z: = NAS etc.) — a slow read from one is the network, not the app.
+  execFileP('net', ['use'], { windowsHide: true, timeout: 5000 })
+    .then(({ stdout }) => {
+      const drives = stdout
+        .split(/\r?\n/)
+        .map((l) => /^\s*(\w*)\s+([A-Z]:)\s+(\\\\\S+)/.exec(l))
+        .filter((m): m is RegExpExecArray => !!m)
+        .map((m) => `${m[2]} → ${m[3]}${m[1] && m[1] !== 'OK' ? ` (${m[1]})` : ''}`)
+      log('network drives: ' + (drives.length ? drives.join(', ') : 'none'))
+    })
+    .catch(() => {})
+}
 
 let mainWindow: BrowserWindow | null = null
 let startupFile: string | null = null
@@ -72,8 +97,25 @@ async function sendFileToWindow(path: string): Promise<void> {
   }
 }
 
+/** Read a whole file, logging size, time, throughput and which drive it came from. */
+async function timedRead(path: string) {
+  const t0 = performance.now()
+  try {
+    const data = await fs.readFile(path)
+    const ms = performance.now() - t0
+    const rate = ms > 0 ? ` (${(data.byteLength / 1048576 / (ms / 1000)).toFixed(1)} MB/s)` : ''
+    const line = `read: ${fileName(path)} ${mb(data.byteLength)} in ${Math.round(ms)} ms${rate} from ${whereIs(path)}`
+    if (ms > 1500) logWarn(line + ' — SLOW READ')
+    else log(line)
+    return data
+  } catch (e) {
+    logError(`read failed: ${fileName(path)} from ${whereIs(path)} after ${Math.round(performance.now() - t0)} ms — ${errText(e)}`)
+    throw e
+  }
+}
+
 async function readPdfPayload(path: string): Promise<PdfPayload> {
-  const data = await fs.readFile(path)
+  const data = await timedRead(path)
   return {
     path,
     name: path.split(/[\\/]/).pop() || 'document.pdf',
@@ -120,9 +162,14 @@ function getTess(): Promise<TessWorker> {
 // tesseract.js worker-thread failures can surface as uncaught exceptions in
 // the main process (outside our promise chain). Contain them — a background
 // OCR hiccup must never take the app down with a crash dialog.
+process.on('unhandledRejection', (reason) => {
+  logError('unhandled promise rejection (main): ' + errText(reason))
+})
+
 process.on('uncaughtException', (err) => {
   const s = String(err?.stack || err)
   console.error('[uncaughtException]', s)
+  logError('uncaught exception (main): ' + s)
   if (/tesseract/i.test(s)) {
     const p = tessP
     tessP = null
@@ -143,9 +190,17 @@ function scheduleTessIdle(): void {
 }
 
 async function ocrRecognize(image: Buffer): Promise<OcrWordOut[]> {
+  const t0 = performance.now()
+  const cold = !tessP
   const worker = await getTess()
+  const tReady = performance.now()
   const { data } = await worker.recognize(image)
   scheduleTessIdle()
+  log(
+    `ocr: page image ${mb(image.byteLength)} recognised in ${Math.round(performance.now() - tReady)} ms` +
+      (cold ? ` (+${Math.round(tReady - t0)} ms starting the OCR engine)` : '') +
+      `, ${data.words?.length ?? 0} words`
+  )
   return (data.words || [])
     .filter((w) => w.text && w.text.trim() && w.confidence >= 35)
     .map((w) => ({ text: w.text, x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 }))
@@ -239,13 +294,30 @@ function createWindow(): void {
   // Normally we wait for the first paint so there's no white flash. If the
   // renderer never gets there, show the window anyway rather than leaving an
   // invisible process sitting on the single-instance lock.
+  log('window: created')
   const showFallback = setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) mainWindow.show()
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      logWarn('window: never reached ready-to-show — showing it anyway after 12 s')
+      mainWindow.show()
+    }
   }, 12000)
   mainWindow.on('ready-to-show', () => {
     clearTimeout(showFallback)
+    log('window: shown (first paint)')
     mainWindow?.show()
   })
+  // "Not responding": the renderer is stuck on something — the log lines just
+  // before this say what.
+  let hungAt = 0
+  mainWindow.on('unresponsive', () => {
+    hungAt = performance.now()
+    logWarn('window: NOT RESPONDING')
+  })
+  mainWindow.on('responsive', () => {
+    if (hungAt) logWarn(`window: responding again after ${Math.round((performance.now() - hungAt) / 1000)} s`)
+    hungAt = 0
+  })
+  mainWindow.webContents.on('did-finish-load', () => log('window: page loaded'))
   mainWindow.on('closed', () => clearTimeout(showFallback))
 
   // Unsaved-changes guard: renderer keeps us posted via app:setDirty.
@@ -266,9 +338,11 @@ function createWindow(): void {
 
   mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
     console.error('[renderer did-fail-load]', code, desc, url)
+    logError(`window: page failed to load — ${code} ${desc}`)
   })
   mainWindow.webContents.on('render-process-gone', (_e, details) => {
     console.error('[render-process-gone]', details.reason, details.exitCode)
+    logError(`window: renderer process gone — ${details.reason}, exit code ${details.exitCode}`)
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -316,6 +390,9 @@ function runAppCommand(cmd: string): void {
       break
     case 'releases':
       shell.openExternal(RELEASES_PAGE)
+      break
+    case 'logs':
+      void fs.mkdir(logDir(), { recursive: true }).then(() => shell.openPath(logDir()))
       break
     case 'quit':
       app.quit()
@@ -380,6 +457,7 @@ function buildMenu(): void {
           click: () => installUpdate()
         },
         { label: 'Release Notes (GitHub)', click: () => shell.openExternal(RELEASES_PAGE) },
+        { label: 'Open Log Folder', click: () => runAppCommand('logs') },
         { type: 'separator' },
         { label: 'About PDF Studio', click: () => showAbout() }
       ]
@@ -431,6 +509,7 @@ if (runningSelftest) {
 } else {
   app.on('second-instance', async (_e, argv) => {
     const f = pdfFromArgv(argv)
+    log(`second launch → handed to the running window${f ? `: ${fileName(f)} from ${whereIs(f)}` : ' (no file)'}`)
     // The primary instance can be left with no usable window (a hung startup,
     // or a window that went away without quitting). Without this recovery it
     // keeps the single-instance lock forever and every later launch silently
@@ -452,11 +531,18 @@ if (runningSelftest) {
     }
   })
   startupFile = pdfFromArgv(process.argv)
+  logSessionStart()
+  log(startupFile ? `launched with ${fileName(startupFile)} from ${whereIs(startupFile)}` : 'launched with no file')
+  pruneLogs()
   bootstrap()
 }
 
 function bootstrap(): void {
+  app.on('child-process-gone', (_e, d) => {
+    if (d.reason !== 'clean-exit') logError(`child process gone: ${d.type} ${d.name ?? ''} — ${d.reason}, exit ${d.exitCode}`)
+  })
   app.whenReady().then(async () => {
+    log('app: ready')
     app.setAppUserModelId('ca.dirtpro.pdfstudio')
     await loadRecents()
     buildMenu()
@@ -593,6 +679,12 @@ function bootstrap(): void {
     ipcMain.handle('recents:get', async () => existingRecents().map((r) => ({ path: r.path, name: r.name })))
     ipcMain.on('recents:add', (_e, path: string) => addRecent(path))
 
+    // Renderer log lines (open timings, slow page draws, errors).
+    ipcMain.on('log:write', (_e, level: Level, msg: string) => {
+      const lv: Level = level === 'WARN' || level === 'ERROR' ? level : 'INFO'
+      writeLog('renderer', lv, String(msg).slice(0, 8000))
+    })
+
     ipcMain.on('app:setDirty', (_e, v: boolean) => {
       hasDirty = !!v
     })
@@ -604,20 +696,34 @@ function bootstrap(): void {
         filters: [{ name: 'PDF Documents', extensions: ['pdf'] }]
       })
       if (res.canceled || !res.filePath) return null
-      await fs.writeFile(res.filePath, Buffer.from(args.bytes))
+      const t0 = performance.now()
+      try {
+        await fs.writeFile(res.filePath, Buffer.from(args.bytes))
+      } catch (e) {
+        logError(`save as failed: ${fileName(res.filePath)} to ${whereIs(res.filePath)} — ${errText(e)}`)
+        throw e
+      }
+      log(
+        `write: ${fileName(res.filePath)} ${mb(args.bytes.byteLength)} in ${Math.round(performance.now() - t0)} ms to ${whereIs(res.filePath)} (Save As)`
+      )
       addRecent(res.filePath)
       return res.filePath
     })
 
     // Overwrite an existing file safely (write temp, then atomic rename).
     ipcMain.handle('file:saveToPath', async (_e, args: { path: string; bytes: ArrayBuffer }) => {
+      const t0 = performance.now()
       try {
         const tmp = args.path + '.pdfstudio-tmp'
         await fs.writeFile(tmp, Buffer.from(args.bytes))
         await fs.rename(tmp, args.path)
         addRecent(args.path)
+        log(
+          `write: ${fileName(args.path)} ${mb(args.bytes.byteLength)} in ${Math.round(performance.now() - t0)} ms to ${whereIs(args.path)}`
+        )
         return { ok: true as const }
       } catch (err) {
+        logError(`save failed: ${fileName(args.path)} to ${whereIs(args.path)} — ${errText(err)}`)
         return { ok: false as const, error: String((err as Error)?.message || err) }
       }
     })
@@ -632,12 +738,17 @@ function bootstrap(): void {
       const file = join(tmpDir, 'print.html')
       const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true } })
       try {
+        const t0 = performance.now()
         await fs.writeFile(file, html, 'utf8')
         await win.loadFile(file)
-        return await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+        log(`print: page images (${mb(html.length)}) loaded in ${Math.round(performance.now() - t0)} ms, opening print dialog`)
+        const r = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
           win.webContents.print({}, (success, reason) => resolve({ ok: success, error: reason || undefined }))
         })
+        log(`print: ${r.ok ? 'sent to printer' : 'not printed — ' + (r.error || 'cancelled')}`)
+        return r
       } catch (err) {
+        logError('print failed: ' + errText(err))
         return { ok: false, error: String((err as Error)?.message || err) }
       } finally {
         win.destroy()
@@ -751,7 +862,9 @@ function bootstrap(): void {
         const argv = ['--deterministic-id', '--decrypt']
         if (args.password) argv.push(`--password=${args.password}`)
         argv.push(inPath, outPath)
+        const t0 = performance.now()
         await execFileP(qpdf, argv, { windowsHide: true })
+        log(`unlock: qpdf removed restrictions from ${mb(args.bytes.byteLength)} in ${Math.round(performance.now() - t0)} ms`)
         const out = await fs.readFile(outPath)
         return { ok: true, bytes: out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) }
       } catch (err: any) {
@@ -779,6 +892,11 @@ function bootstrap(): void {
     initUpdater({
       window: () => mainWindow,
       onState: (s: UpdateState) => {
+        // every state but the per-percent download ticks
+        if (s.state !== 'downloading' || s.percent === 0) {
+          const detail = 'version' in s ? ' ' + s.version : s.state === 'error' ? ' — ' + s.error : ''
+          writeLog('updater', s.state === 'error' ? 'WARN' : 'INFO', s.state + detail)
+        }
         // keep the native Help menu's "Restart to Update" item in step
         const ready = s.state === 'ready' ? s.version : null
         if (ready !== updateReady) {
@@ -803,6 +921,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', () => {
+  log('=== quitting')
   installOnQuit()
   const p = tessP
   tessP = null

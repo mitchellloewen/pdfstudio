@@ -507,6 +507,9 @@ export default function Toolbar(props: Props): JSX.Element {
                   <button className="dm-item" onClick={() => { close(); cmd('releases') }}>
                     Release notes (GitHub)
                   </button>
+                  <button className="dm-item" onClick={() => { close(); cmd('logs') }}>
+                    Open log folder
+                  </button>
                   <div className="dm-sep" />
                   <button className="dm-item" onClick={() => { close(); cmd('about') }}>
                     About PDF Studio <span className="dm-kbd">v{props.appVersion}</span>

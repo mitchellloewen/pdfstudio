@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { log, SLOW_THUMB_MS } from '../log'
 import type { PDFDocumentProxy, PDFPageProxy } from '../pdf/pdfjs'
 import type { PageLeaf } from '../pdf/types'
 
@@ -77,7 +78,14 @@ function Thumb({
         viewport: vp,
         optionalContentConfigPromise: layerConfig ? Promise.resolve(layerConfig as never) : undefined
       })
-      task.promise.catch(() => {})
+      const t0 = performance.now()
+      task.promise.then(
+        () => {
+          const ms = performance.now() - t0
+          if (ms >= SLOW_THUMB_MS) log(`slow thumbnail: page ${leaf.srcPage} took ${Math.round(ms)} ms`)
+        },
+        () => {}
+      )
     })
     return () => {
       cancelled = true
